@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default="",
         description="Gemini model name for long-context analysis (from .env, no retired default)",
     )
+    gemini_fallback_model: str = Field(
+        default="",
+        description="Optional fallback Gemini model name (from .env, no retired default)",
+    )
     ollama_base_url: str = Field(
         default="http://localhost:11434",
         description="Ollama server base URL",
@@ -113,6 +117,14 @@ class Settings(BaseSettings):
     stale_ticket_days: int = Field(
         default=14,
         description="Number of inactive days before a Jira ticket is considered stale",
+    )
+    abandoned_pr_days: int = Field(
+        default=180,
+        description="Days after which a PR is classified as abandoned (urgency watch)",
+    )
+    max_items_in_prompt: int = Field(
+        default=15,
+        description="Maximum number of stale PRs and Jira issues included in the LLM prompt",
     )
 
     @field_validator("jira_project_key", mode="after")

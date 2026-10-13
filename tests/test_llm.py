@@ -194,3 +194,124 @@ async def test_router_ollama_disabled_gemini_only(monkeypatch: pytest.MonkeyPatc
     mock_ollama.check_health.assert_not_called()
     mock_ollama.generate_json.assert_not_called()
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_llm_retry_on_503_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that a 503 error is retried with backoff and succeeds on subsequent attempt."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    call_count = 0
+
+    class MockModelResponse:
+        text = '{"name": "recovered", "score": 99}'
+
+    class MockModels:
+        async def generate_content(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                from google.genai.errors import APIError
+                raise APIError(code=503, response_json={"error": "503 UNAVAILABLE"})
+            return MockModelResponse()
+
+    class MockAio:
+        models = MockModels()
+
+    mock_sdk_client = MagicMock()
+    mock_sdk_client.aio = MockAio()
+
+    client = GeminiClient(
+        api_key="test-key",
+        model="gemini-test",
+        client=mock_sdk_client,
+    )
+
+    result = await client.generate_json("Prompt", DummySchema)
+    assert call_count == 2
+    assert result.name == "recovered"
+    assert result.score == 99
+
+
+@pytest.mark.asyncio
+async def test_llm_no_retry_on_404_fails_immediately() -> None:
+    """Test that a 404 error is not retried and fails immediately with AnalysisError."""
+    call_count = 0
+
+    class MockModels:
+        async def generate_content(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            from google.genai.errors import APIError
+            raise APIError(code=404, response_json={"error": "404 NOT_FOUND"})
+
+    class MockAio:
+        models = MockModels()
+
+    mock_sdk_client = MagicMock()
+    mock_sdk_client.aio = MockAio()
+
+    client = GeminiClient(
+        api_key="test-key",
+        model="gemini-test",
+        client=mock_sdk_client,
+    )
+
+    with pytest.raises(AnalysisError) as exc_info:
+        await client.generate_json("Prompt", DummySchema)
+
+    # Must fail on the very first attempt without retrying
+    assert call_count == 1
+    assert "404" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_router_fallback_order_gemini_main_to_fallback_to_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test router attempts models in sequence: Gemini main -> Gemini fallback -> Ollama."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-main")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini-fallback")
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_MODEL", "ollama-local")
+    get_settings.cache_clear()
+
+    calls_sequence: list = []
+
+    mock_gemini = AsyncMock(spec=GeminiClient)
+
+    async def mock_gemini_generate(*args, **kwargs):
+        model = kwargs.get("model")
+        calls_sequence.append(f"gemini:{model}")
+        raise AnalysisError(f"Gemini {model} failure")
+
+    mock_gemini.generate_json.side_effect = mock_gemini_generate
+
+    mock_ollama = AsyncMock(spec=OllamaClient)
+    mock_ollama.check_health.return_value = True
+
+    async def mock_ollama_generate(*args, **kwargs):
+        calls_sequence.append("ollama:ollama-local")
+        return Analysis(
+            patterns=["Recovered via Ollama"],
+            priority_flags=[],
+            shipped_this_period=[],
+            velocity_note="Note",
+            one_recommendation="Rec",
+        )
+
+    mock_ollama.generate_json.side_effect = mock_ollama_generate
+
+    router = LLMRouter(ollama_client=mock_ollama, gemini_client=mock_gemini)
+    result = await router.route("Analyze work", schema=Analysis, task_type="analysis")
+
+    # Sequence must be: gemini:gemini-main -> gemini:gemini-fallback -> ollama:ollama-local
+    assert calls_sequence == [
+        "gemini:gemini-main",
+        "gemini:gemini-fallback",
+        "ollama:ollama-local",
+    ]
+    assert result.provider == "ollama"
+    assert result.data.patterns == ["Recovered via Ollama"]
+    get_settings.cache_clear()

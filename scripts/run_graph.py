@@ -129,8 +129,19 @@ async def execute_graph(
         print(f"\n[Analysis]    : {analysis}")
 
     # Priority Items
-    priority_items = state_dict.get("priority_items")
-    print(f"\n[Priority Items]: {json.dumps(priority_items, indent=2)}")
+    priority_items = state_dict.get("priority_items") or []
+    print(f"\n[Priority Flags ({len(priority_items)})]:")
+    if not priority_items:
+        print("  (None)")
+    else:
+        for flag in priority_items:
+            item_id = flag.get("item_id", "Unknown") if isinstance(flag, dict) else getattr(flag, "item_id", "Unknown")
+            urgency = flag.get("urgency", "N/A") if isinstance(flag, dict) else getattr(flag, "urgency", "N/A")
+            reason = flag.get("reason", "") if isinstance(flag, dict) else getattr(flag, "reason", "")
+            action = flag.get("suggested_action", "") if isinstance(flag, dict) else getattr(flag, "suggested_action", "")
+            print(f"  * [{urgency.upper()}] {item_id}")
+            print(f"    Reason          : {reason}")
+            print(f"    Suggested Action: {action}")
 
     # Briefing
     briefing = state_dict.get("briefing")

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.core.errors import AnalysisError
-from app.core.retry import retry_async
+from app.core.retry import is_retryable_llm_error, retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,11 @@ class OllamaClient:
             return False
 
     @retry_async(
-        max_retries=2,
-        base_delay=1.0,
-        backoff_factor=2.0,
-        retryable_exceptions=(httpx.RequestError, httpx.HTTPStatusError),
+        max_retries=3,
+        base_delay=2.0,
+        backoff_factor=2.25,
+        retry_if=is_retryable_llm_error,
+        retryable_exceptions=(httpx.RequestError, httpx.HTTPStatusError, AnalysisError),
     )
     async def _post_chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Send chat request to Ollama with retry.
@@ -91,7 +92,7 @@ class OllamaClient:
         url = f"{self.base_url}/api/chat"
         try:
             response = await self._client.post(url, json=payload, timeout=self.timeout)
-            if response.status_code >= 500:
+            if response.status_code in (429, 503):
                 response.raise_for_status()
             if response.is_error:
                 raise AnalysisError(
@@ -99,6 +100,13 @@ class OllamaClient:
                     details={"url": url, "status_code": response.status_code},
                 )
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            if not is_retryable_llm_error(exc):
+                raise AnalysisError(
+                    message=f"Ollama API error {exc.response.status_code}: {exc}",
+                    details={"url": url, "status_code": exc.response.status_code},
+                ) from exc
+            raise
         except httpx.RequestError as exc:
             logger.error("Network error communicating with Ollama at %s: %s", url, exc)
             raise AnalysisError(

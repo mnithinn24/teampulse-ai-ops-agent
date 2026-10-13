@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.core.errors import AnalysisError
-from app.core.retry import retry_async
+from app.core.retry import is_retryable_llm_error, retry_async
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +60,17 @@ class GeminiClient:
             self._client = None
 
     @retry_async(
-        max_retries=2,
-        base_delay=1.0,
-        backoff_factor=2.0,
+        max_retries=3,
+        base_delay=2.0,
+        backoff_factor=2.25,
+        retry_if=is_retryable_llm_error,
     )
     async def generate_json(
         self,
         prompt: str,
         schema: Type[T],
         system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> T:
         """Generate structured JSON adhering to a Pydantic schema using Gemini.
 
@@ -76,6 +78,7 @@ class GeminiClient:
             prompt: User prompt content.
             schema: Pydantic model class for output validation.
             system_prompt: Optional system prompt instructions.
+            model: Optional model override (e.g. for fallback model).
 
         Returns:
             Validated instance of the requested Pydantic schema.
@@ -83,10 +86,11 @@ class GeminiClient:
         Raises:
             AnalysisError: If Gemini API fails, returns unparseable content, or validation fails.
         """
-        if not self._client or not self.model:
+        active_model = model or self.model
+        if not self._client or not active_model:
             raise AnalysisError(
                 message="Gemini client cannot generate content: GEMINI_API_KEY or GEMINI_MODEL is not configured.",
-                details={"model": self.model},
+                details={"model": active_model},
             )
 
         try:
@@ -98,7 +102,7 @@ class GeminiClient:
             )
 
             response = await self._client.aio.models.generate_content(
-                model=self.model,
+                model=active_model,
                 contents=prompt,
                 config=config,
             )
@@ -119,7 +123,8 @@ class GeminiClient:
             logger.error("Gemini generation failed for model %s: %s", self.model, exc)
             if isinstance(exc, AnalysisError):
                 raise
+            code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
             raise AnalysisError(
                 message=f"Gemini API failure for model {self.model}: {exc}",
-                details={"model": self.model, "error": str(exc)},
+                details={"model": self.model, "error": str(exc), "code": code},
             ) from exc

@@ -14,8 +14,11 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.stale_ticket_days == 14
     assert settings.jira_project_key == ""
     assert settings.gemini_model == ""
+    assert settings.gemini_fallback_model == ""
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.ollama_model == "llama3"
+    assert settings.abandoned_pr_days == 180
+    assert settings.max_items_in_prompt == 15
 
 
 def test_github_repos_parsing_comma_separated() -> None:

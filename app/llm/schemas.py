@@ -7,6 +7,15 @@ UrgencyLevel = Literal["watch", "urgent", "critical"]
 ItemSource = Literal["github", "jira"]
 
 
+class FlagEvidence(BaseModel):
+    """Grounding evidence copied directly from the collected work item."""
+
+    age_days: int = Field(default=0, description="Age in days copied directly from the data")
+    author_or_assignee: str = Field(
+        default="", description="Author (PR) or assignee (Jira) copied directly from the data"
+    )
+
+
 class PriorityFlag(BaseModel):
     """Represents a flagged issue or pull request requiring team attention."""
 
@@ -16,9 +25,13 @@ class PriorityFlag(BaseModel):
         ..., description="Severity level: watch | urgent | critical"
     )
     source: ItemSource = Field(..., description="Source system: github | jira")
-    item_id: str = Field(..., description="Unique ID, e.g. 'KAN-123' or 'owner/repo#42'")
+    item_id: str = Field(..., description="Unique ID, e.g. canonical ID like '<copy from data>'")
     suggested_action: str = Field(
         ..., description="Recommended action to take on this item"
+    )
+    evidence: Optional[FlagEvidence] = Field(
+        default=None,
+        description="Grounding evidence directly copied from the data (age_days, author_or_assignee)",
     )
 
 

@@ -82,66 +82,51 @@ class LLMRouter:
         if settings.ollama_enabled:
             ollama_available = await self.ollama_client.check_health()
 
-        # Decide preferred execution order
-        gemini_configured = bool(settings.gemini_api_key and settings.gemini_model)
+        # Build prioritized list of (provider, model_name) to attempt
+        candidates: List[Tuple[str, str]] = []
         if is_simple_task and ollama_available:
-            primary_provider = "ollama"
-            fallback_provider = "gemini" if gemini_configured else None
+            candidates.append(("ollama", settings.ollama_model))
+            if settings.gemini_api_key and settings.gemini_model:
+                candidates.append(("gemini", settings.gemini_model))
+            if settings.gemini_api_key and settings.gemini_fallback_model:
+                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
         else:
-            primary_provider = "gemini" if gemini_configured else "ollama"
-            fallback_provider = "ollama" if (ollama_available and primary_provider == "gemini") else None
+            if settings.gemini_api_key and settings.gemini_model:
+                candidates.append(("gemini", settings.gemini_model))
+            if settings.gemini_api_key and settings.gemini_fallback_model:
+                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
+            if ollama_available:
+                candidates.append(("ollama", settings.ollama_model))
 
-        # Attempt primary provider
-        try:
-            return await self._call_provider(
-                provider=primary_provider,
-                prompt=prompt,
-                schema=schema,
-                task_type=task_type,
-                system_prompt=system_prompt,
-            )
-        except Exception as primary_err:
-            logger.warning(
-                "Primary model (%s) failed for task '%s': %s",
-                primary_provider,
-                task_type,
-                primary_err,
-            )
+        if not candidates:
+            raise AnalysisError("No configured LLM providers available (check GEMINI_API_KEY or OLLAMA_BASE_URL).")
 
-            # Attempt fallback if available
-            if fallback_provider and fallback_provider != primary_provider:
-                logger.info(
-                    "Attempting fallback to %s for task '%s'",
-                    fallback_provider,
-                    task_type,
+        errors: List[str] = []
+        for provider, model_name in candidates:
+            try:
+                logger.info("Invoking %s (model: %s) for task '%s'", provider, model_name, task_type)
+                return await self._call_provider(
+                    provider=provider,
+                    prompt=prompt,
+                    schema=schema,
+                    task_type=task_type,
+                    system_prompt=system_prompt,
+                    model_override=model_name,
                 )
-                try:
-                    return await self._call_provider(
-                        provider=fallback_provider,
-                        prompt=prompt,
-                        schema=schema,
-                        task_type=task_type,
-                        system_prompt=system_prompt,
-                    )
-                except Exception as fallback_err:
-                    logger.error(
-                        "Fallback model (%s) also failed: %s",
-                        fallback_provider,
-                        fallback_err,
-                    )
-                    raise AnalysisError(
-                        message=f"Both primary ({primary_provider}) and fallback ({fallback_provider}) models failed: {fallback_err}",
-                        details={
-                            "primary_error": str(primary_err),
-                            "fallback_error": str(fallback_err),
-                            "task_type": task_type,
-                        },
-                    ) from fallback_err
+            except Exception as exc:
+                logger.warning(
+                    "Model candidate %s (%s) failed for task '%s': %s",
+                    provider,
+                    model_name,
+                    task_type,
+                    exc,
+                )
+                errors.append(f"{provider}({model_name}): {exc}")
 
-            raise AnalysisError(
-                message=f"Model execution failed for {primary_provider} and no fallback available: {primary_err}",
-                details={"primary_error": str(primary_err), "task_type": task_type},
-            ) from primary_err
+        raise AnalysisError(
+            message=f"All attempted LLM models failed for task '{task_type}': {'; '.join(errors)}",
+            details={"task_type": task_type, "errors": errors},
+        )
 
     async def _call_provider(
         self,
@@ -150,24 +135,26 @@ class LLMRouter:
         schema: Type[T],
         task_type: str,
         system_prompt: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> LLMResult[T]:
         """Execute call against a specific provider and measure latency in milliseconds."""
         settings = get_settings()
         start = time.perf_counter()
 
         if provider == "ollama":
-            model_name = settings.ollama_model
+            model_name = model_override or settings.ollama_model
             data = await self.ollama_client.generate_json(
                 prompt=prompt,
                 schema=schema,
                 system_prompt=system_prompt,
             )
-        elif provider == "gemini":
-            model_name = settings.gemini_model
+        elif provider in ("gemini", "gemini_fallback"):
+            model_name = model_override or (settings.gemini_model if provider == "gemini" else settings.gemini_fallback_model)
             data = await self.gemini_client.generate_json(
                 prompt=prompt,
                 schema=schema,
                 system_prompt=system_prompt,
+                model=model_name,
             )
         else:
             raise AnalysisError(f"Unknown provider '{provider}'")
