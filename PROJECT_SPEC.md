@@ -76,3 +76,8 @@ teampulse/
 5 FastAPI routes, scheduler, Slack signature verification
 6 Pytest suite and evals (labeled cases, accuracy and latency report)
 7 Docker, Cloud Run deploy script, README with architecture diagram
+
+## Database
+Use SQLAlchemy 2.0 with DATABASE_URL from .env. Dev: MySQL (pymysql driver).
+Tests: in-memory SQLite. Code must work on both. Add DATABASE_URL to .env.example.
+Tables: workspaces, agent_runs, flags, actions_taken. Create tables on startup.

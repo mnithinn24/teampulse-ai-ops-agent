@@ -1,9 +1,51 @@
 """Configuration management using pydantic-settings for TeamPulse."""
 
 from functools import lru_cache
+import re
 from typing import Any, List, Union
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+JIRA_KEY_REGEX = re.compile(r"^[A-Z][A-Z0-9_]{1,30}$")
+
+
+def validate_jira_project_key(project_key: str) -> str:
+    """Validate Jira project key format.
+
+    Args:
+        project_key: Key to validate (e.g. 'KAN', 'PROJ').
+
+    Returns:
+        The validated uppercase project key.
+
+    Raises:
+        ValueError: If key is invalid, especially if it looks like a site name or URL.
+    """
+    key = project_key.strip()
+    if not key:
+        return ""
+
+    if (
+        ".atlassian.net" in key.lower()
+        or "http" in key.lower()
+        or "/" in key
+        or "-" in key
+        or any(c.islower() for c in key)
+    ):
+        raise ValueError(
+            f"Invalid JIRA_PROJECT_KEY '{project_key}': looks like a site name or URL. "
+            f"Jira project keys must be uppercase letters and numbers (e.g. 'KAN' or 'PROJ'), "
+            f"not the site name ('{project_key}')."
+        )
+
+    if not JIRA_KEY_REGEX.match(key):
+        raise ValueError(
+            f"Invalid JIRA_PROJECT_KEY '{project_key}'. "
+            f"Jira project keys must start with an uppercase letter followed by uppercase letters or digits (e.g. 'KAN', 'PROJ')."
+        )
+
+    return key
 
 
 class Settings(BaseSettings):
@@ -27,6 +69,13 @@ class Settings(BaseSettings):
     jira_base_url: str = Field(default="", description="Base URL for Jira Cloud instance")
     jira_email: str = Field(default="", description="Jira user email address")
     jira_api_token: str = Field(default="", description="Jira REST API token")
+    jira_project_key: str = Field(default="", description="Target Jira project key, e.g. PROJ")
+
+    # Database Configuration
+    database_url: str = Field(
+        default="sqlite:///./teampulse.db",
+        description="SQLAlchemy database connection URL (MySQL with pymysql or SQLite)",
+    )
 
     # Slack Configuration
     slack_bot_token: str = Field(default="", description="Slack Bot User OAuth Token")
@@ -58,6 +107,12 @@ class Settings(BaseSettings):
         description="Number of inactive days before a Jira ticket is considered stale",
     )
 
+    @field_validator("jira_project_key", mode="after")
+    @classmethod
+    def validate_jira_project_key_field(cls, value: str) -> str:
+        """Validate Jira project key format upon loading settings."""
+        return validate_jira_project_key(value)
+
     @field_validator("github_repos", mode="before")
     @classmethod
     def parse_github_repos(cls, value: Any) -> List[str]:
@@ -67,7 +122,7 @@ class Settings(BaseSettings):
             value: A string or list containing repository identifiers.
 
         Returns:
-            A cleaned list of repository strings (e.g. ['owner/repo1', 'owner/repo2']).
+            A cleaned list of repository strings (e.g. ['org/repo-a', 'org/repo-b']).
         """
         if isinstance(value, str):
             value = value.strip()

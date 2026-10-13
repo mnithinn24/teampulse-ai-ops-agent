@@ -50,7 +50,7 @@ async def run_check(
         Exit code (0 if completed, 1 on error).
     """
     settings = get_settings()
-    target_repos = repos or settings.github_repos
+    target_repos = settings.github_repos if repos is None else repos
 
     if not target_repos:
         print(
