@@ -58,3 +58,15 @@ class TeamPulseState(BaseModel):
         default_factory=list,
         description="Errors encountered across stages",
     )
+
+    def __getitem__(self, item: str) -> Any:
+        """Allow dict-like indexing access for compatibility."""
+        return getattr(self, item)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Allow dict-like assignment for compatibility."""
+        setattr(self, key, value)
+
+    def __contains__(self, key: str) -> bool:
+        """Allow 'in' membership check for compatibility."""
+        return hasattr(self, key)

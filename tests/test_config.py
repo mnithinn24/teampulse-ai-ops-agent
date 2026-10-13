@@ -8,11 +8,12 @@ from app.config import Settings, get_settings
 def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test default values of application settings."""
     monkeypatch.delenv("JIRA_PROJECT_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
     settings = Settings(_env_file=None)
     assert settings.stale_pr_days == 7
     assert settings.stale_ticket_days == 14
     assert settings.jira_project_key == ""
-    assert settings.gemini_model == "gemini-1.5-pro"
+    assert settings.gemini_model == ""
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.ollama_model == "llama3"
 

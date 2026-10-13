@@ -96,41 +96,36 @@ async def run_collect(
     }
 
 
-async def run_analyze(state: TeamPulseState) -> Dict[str, Any]:
-    """Analyze node stub for Phase 2.
+from app.agents.analyze import analyze_workspace
+from app.llm.router import LLMRouter
 
-    In Phase 3, this will invoke the LLM router (Ollama/Gemini) to evaluate
-    patterns, deduplicate against previously flagged items, and prioritize issues.
+
+async def run_analyze(
+    state: TeamPulseState,
+    router: Optional[LLMRouter] = None,
+) -> Dict[str, Any]:
+    """Execute real Analyze node using LLMRouter, prompt synthesis, and validation.
 
     Args:
         state: Current TeamPulseState.
+        router: Optional pre-configured or mocked LLMRouter.
 
     Returns:
-        State update dictionary with placeholder analysis and priority items.
+        State update dictionary containing analysis and priority_items.
     """
-    logger.info("Executing Analyze node (Phase 2 stub)")
+    logger.info("Executing Analyze node for workspace: %s", state.workspace_id)
+    analysis, model_used, latency_ms = await analyze_workspace(state, router=router)
 
-    # Count collected items if available
-    gh_count = len(state.github_data) if isinstance(state.github_data, list) else 0
-    jr_count = len(state.jira_data) if isinstance(state.jira_data, list) else 0
-
-    analysis_stub = {
-        "summary": f"Phase 2 stub analysis. Found {gh_count} PRs and {jr_count} Jira issues.",
-        "findings": ["Analysis logic will be implemented in Phase 3."],
+    analysis_dict = analysis.model_dump()
+    analysis_dict["_meta"] = {
+        "model_name": model_used,
+        "latency_ms": latency_ms,
     }
 
-    priority_items_stub = [
-        {
-            "id": "sample-priority-1",
-            "source": "stub",
-            "title": "Sample priority item for Phase 2 pipeline verification",
-            "urgency": "medium",
-        }
-    ]
-
     return {
-        "analysis": analysis_stub,
-        "priority_items": priority_items_stub,
+        "analysis": analysis_dict,
+        "priority_items": [flag.model_dump() for flag in analysis.priority_flags],
+        "errors": list(state.errors),
     }
 
 
@@ -167,6 +162,7 @@ async def run_act(state: TeamPulseState) -> Dict[str, Any]:
 def create_pipeline(
     github_client: Optional[GitHubClient] = None,
     jira_client: Optional[JiraClient] = None,
+    router: Optional[LLMRouter] = None,
 ) -> Any:
     """Construct and compile the 3-node LangGraph pipeline.
 
@@ -175,6 +171,7 @@ def create_pipeline(
     Args:
         github_client: Optional pre-configured or mock GitHubClient.
         jira_client: Optional pre-configured or mock JiraClient.
+        router: Optional pre-configured or mock LLMRouter.
 
     Returns:
         Compiled LangGraph runnable StateGraph.
@@ -186,7 +183,7 @@ def create_pipeline(
         return await run_collect(state, github_client=github_client, jira_client=jira_client)
 
     async def analyze_node(state: TeamPulseState) -> Dict[str, Any]:
-        return await run_analyze(state)
+        return await run_analyze(state, router=router)
 
     async def act_node(state: TeamPulseState) -> Dict[str, Any]:
         return await run_act(state)

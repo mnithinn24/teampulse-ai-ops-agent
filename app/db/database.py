@@ -20,6 +20,15 @@ _engine: Optional[Engine] = None
 _SessionFactory: Optional[sessionmaker[Session]] = None
 
 
+def reset_db_connections() -> None:
+    """Reset cached engine and session factory (useful for test isolation)."""
+    global _engine, _SessionFactory
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _SessionFactory = None
+
+
 def get_engine(database_url: Optional[str] = None) -> Engine:
     """Create or return existing SQLAlchemy engine.
 

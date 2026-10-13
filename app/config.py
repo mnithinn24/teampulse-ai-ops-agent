@@ -85,8 +85,8 @@ class Settings(BaseSettings):
     # LLM Configuration
     gemini_api_key: str = Field(default="", description="Google Gemini API Key")
     gemini_model: str = Field(
-        default="gemini-1.5-pro",
-        description="Gemini model name for long-context analysis",
+        default="",
+        description="Gemini model name for long-context analysis (from .env, no retired default)",
     )
     ollama_base_url: str = Field(
         default="http://localhost:11434",
@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     ollama_model: str = Field(
         default="llama3",
         description="Local Ollama model name for quick classification",
+    )
+    ollama_enabled: bool = Field(
+        default=True,
+        description="Whether local/LAN Ollama is enabled",
+    )
+    llm_timeout_seconds: float = Field(
+        default=60.0,
+        description="Timeout in seconds for LLM API requests",
     )
 
     # Operational Thresholds

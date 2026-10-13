@@ -108,8 +108,25 @@ async def execute_graph(
         print(f"\n[Jira Data]   : {jr_data}")
 
     # Analysis
-    analysis = state_dict.get("analysis")
-    print(f"\n[Analysis]    : {json.dumps(analysis, indent=2) if isinstance(analysis, dict) else analysis}")
+    analysis = state_dict.get("analysis", {})
+    if isinstance(analysis, dict):
+        meta = analysis.get("_meta", {})
+        model_used = meta.get("model_name", "N/A")
+        latency_ms = meta.get("latency_ms", "N/A")
+        print(f"\n[Analysis]")
+        print(f"  * Model Used        : {model_used}")
+        print(f"  * LLM Latency       : {latency_ms} ms")
+        if analysis.get("velocity_note"):
+            print(f"  * Velocity Note     : {analysis.get('velocity_note')}")
+        if analysis.get("one_recommendation"):
+            print(f"  * Recommendation    : {analysis.get('one_recommendation')}")
+        patterns = analysis.get("patterns", [])
+        if patterns:
+            print("  * Identified Patterns:")
+            for pat in patterns:
+                print(f"      - {pat}")
+    else:
+        print(f"\n[Analysis]    : {analysis}")
 
     # Priority Items
     priority_items = state_dict.get("priority_items")
