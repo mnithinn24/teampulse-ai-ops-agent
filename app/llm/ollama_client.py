@@ -8,7 +8,7 @@ import httpx
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.core.errors import AnalysisError
+from app.core.errors import AnalysisError, InvalidJSONError
 from app.core.retry import is_retryable_llm_error, retry_async
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ class OllamaClient:
         cleaned_content = strip_think_tags(raw_content)
 
         if not cleaned_content:
-            raise AnalysisError(
+            raise InvalidJSONError(
                 message="Ollama returned empty response content",
                 details={"raw_response": data},
             )
@@ -169,7 +169,7 @@ class OllamaClient:
             return schema.model_validate(parsed_json)
         except Exception as exc:
             logger.warning("Ollama response failed schema validation: %s. Content: %s", exc, cleaned_content)
-            raise AnalysisError(
+            raise InvalidJSONError(
                 message=f"Ollama output failed validation for schema {schema.__name__}: {exc}",
                 details={"content": cleaned_content, "error": str(exc)},
             ) from exc

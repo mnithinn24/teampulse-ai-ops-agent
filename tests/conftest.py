@@ -12,6 +12,7 @@ def isolate_test_environment(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("JIRA_PROJECT_KEY", "TEST")
     monkeypatch.setenv("GITHUB_REPOS", "test-org/test-repo")
+    monkeypatch.setenv("DRY_RUN_ACTIONS", "false")
     get_settings.cache_clear()
 
     import app.db.database as db_module

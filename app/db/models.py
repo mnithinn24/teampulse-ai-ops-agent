@@ -10,6 +10,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.core.constants import (
+    FLAG_LEVEL_NORMAL,
+    ITEM_TYPE_GITHUB_PR,
+    ITEM_TYPE_JIRA_ISSUE,
+    STATUS_PENDING,
+    URGENCY_WATCH,
+)
+
 
 def utc_now() -> datetime:
     """Return current UTC timestamp without timezone offset for database compatibility."""
@@ -73,6 +81,12 @@ class AgentRun(Base):
     briefing: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, doc="Generated briefing text or Block Kit JSON"
     )
+    slack_channel: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, doc="Slack channel ID where briefing was posted"
+    )
+    slack_ts: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, doc="Slack message timestamp (ts)"
+    )
     errors: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, doc="Serialized JSON list of errors encountered"
     )
@@ -94,16 +108,49 @@ class Flag(Base):
         String(64), index=True, nullable=False
     )
     item_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, doc="'github_pr' or 'jira_ticket'"
+        String(32), nullable=False, doc="'github_pr' or 'jira_issue'"
     )
     item_id: Mapped[str] = mapped_column(
         String(128), index=True, nullable=False, doc="e.g., 'PROJ-123' or 'owner/repo#42'"
+    )
+    title: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, doc="Item title or summary"
     )
     flag_reason: Mapped[str] = mapped_column(
         String(255), nullable=False, doc="stale, blocker, unassigned"
     )
     flag_level: Mapped[str] = mapped_column(
-        String(32), default="normal", nullable=False, doc="normal or escalated"
+        String(32), default=FLAG_LEVEL_NORMAL, nullable=False, doc="normal or escalated"
+    )
+    urgency: Mapped[Optional[str]] = mapped_column(
+        String(32), default=URGENCY_WATCH, nullable=True, doc="critical, urgent, watch"
+    )
+    suggested_action: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, doc="Recommended action description"
+    )
+    evidence_age_days: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )
+    evidence_author: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), default=STATUS_PENDING, nullable=False, doc="pending, approved, dismissed, failed"
+    )
+    approved_by: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, doc="Slack User ID of the decider"
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    result: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, doc="Execution outcome, e.g. created Jira key or comment confirmation"
+    )
+    slack_channel: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, doc="Slack channel ID where the briefing was posted"
+    )
+    slack_ts: Mapped[Optional[str]] = mapped_column(
+        String(64), index=True, nullable=True, doc="Slack message ts when posted"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, index=True, nullable=False
@@ -139,6 +186,12 @@ class ActionTaken(Base):
     )
     approved_by: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, doc="Slack User ID of the approver"
+    )
+    result: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, doc="Result outcome or created ticket identifier"
+    )
+    error: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, doc="Error message if execution failed"
     )
     executed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True

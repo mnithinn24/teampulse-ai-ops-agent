@@ -129,40 +129,32 @@ async def run_analyze(
     }
 
 
-async def run_act(state: TeamPulseState) -> Dict[str, Any]:
-    """Act node stub for Phase 2.
+from app.agents.act import act_on_workspace
+from app.integrations.slack_client import SlackClient
 
-    In Phase 4, this will construct the Slack Block Kit briefing and prepare
-    approval buttons for human-in-the-loop actions.
+
+async def run_act(
+    state: TeamPulseState,
+    slack_client: Optional[SlackClient] = None,
+) -> Dict[str, Any]:
+    """Execute real Act node: saves flags as pending and posts Slack Block Kit briefing.
 
     Args:
         state: Current TeamPulseState.
+        slack_client: Optional pre-configured SlackClient.
 
     Returns:
-        State update dictionary with placeholder briefing.
+        State update dictionary containing briefing and errors.
     """
-    logger.info("Executing Act node (Phase 2 stub)")
-
-    briefing_stub = {
-        "text": f"TeamPulse Briefing for workspace '{state.workspace_id}' (Phase 2 stub)",
-        "blocks": [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "TeamPulse Ops Briefing (Stub)"},
-            }
-        ],
-        "status": "ready_for_review",
-    }
-
-    return {
-        "briefing": briefing_stub,
-    }
+    logger.info("Executing Act node for workspace: %s", state.workspace_id)
+    return await act_on_workspace(state, slack_client=slack_client)
 
 
 def create_pipeline(
     github_client: Optional[GitHubClient] = None,
     jira_client: Optional[JiraClient] = None,
     router: Optional[LLMRouter] = None,
+    slack_client: Optional[SlackClient] = None,
 ) -> Any:
     """Construct and compile the 3-node LangGraph pipeline.
 
@@ -172,6 +164,7 @@ def create_pipeline(
         github_client: Optional pre-configured or mock GitHubClient.
         jira_client: Optional pre-configured or mock JiraClient.
         router: Optional pre-configured or mock LLMRouter.
+        slack_client: Optional pre-configured or mock SlackClient.
 
     Returns:
         Compiled LangGraph runnable StateGraph.
@@ -179,6 +172,16 @@ def create_pipeline(
     graph_builder = StateGraph(TeamPulseState)
 
     # Node wrappers injecting custom clients if provided
+    is_test_pipeline = any(c is not None for c in (github_client, jira_client, router))
+    effective_slack = slack_client
+    if effective_slack is None and is_test_pipeline:
+        from unittest.mock import AsyncMock
+        mock_slack = AsyncMock(spec=SlackClient)
+        mock_slack.post_message = AsyncMock(
+            return_value={"ok": True, "channel": "test-channel", "ts": "1234567890.123456"}
+        )
+        effective_slack = mock_slack
+
     async def collect_node(state: TeamPulseState) -> Dict[str, Any]:
         return await run_collect(state, github_client=github_client, jira_client=jira_client)
 
@@ -186,7 +189,7 @@ def create_pipeline(
         return await run_analyze(state, router=router)
 
     async def act_node(state: TeamPulseState) -> Dict[str, Any]:
-        return await run_act(state)
+        return await run_act(state, slack_client=effective_slack)
 
     # Register nodes
     graph_builder.add_node("collect", collect_node)

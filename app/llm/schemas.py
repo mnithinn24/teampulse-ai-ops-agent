@@ -4,7 +4,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 UrgencyLevel = Literal["watch", "urgent", "critical"]
-ItemSource = Literal["github", "jira"]
+ItemSource = Literal["github", "jira", "github_pr", "jira_issue"]
 
 
 class FlagEvidence(BaseModel):

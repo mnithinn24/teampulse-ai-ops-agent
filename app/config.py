@@ -3,6 +3,7 @@
 from functools import lru_cache
 import re
 from typing import Any, List, Union
+from zoneinfo import ZoneInfo
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -81,6 +82,18 @@ class Settings(BaseSettings):
     slack_bot_token: str = Field(default="", description="Slack Bot User OAuth Token")
     slack_signing_secret: str = Field(default="", description="Slack App Signing Secret")
     slack_channel_id: str = Field(default="", description="Target Slack Channel ID")
+    slack_approver_ids: Union[List[str], str] = Field(
+        default_factory=list,
+        description="Comma-separated Slack user IDs allowed to approve (empty allows anyone)",
+    )
+    max_flags_in_briefing: int = Field(
+        default=10,
+        description="Maximum number of flags included in the Slack briefing",
+    )
+    dry_run_actions: bool = Field(
+        default=False,
+        description="If True, logs suggested write actions without calling Jira",
+    )
 
     # LLM Configuration
     gemini_api_key: str = Field(default="", description="Google Gemini API Key")
@@ -91,6 +104,10 @@ class Settings(BaseSettings):
     gemini_fallback_model: str = Field(
         default="",
         description="Optional fallback Gemini model name (from .env, no retired default)",
+    )
+    gemini_thinking_level: str = Field(
+        default="low",
+        description="Gemini reasoning thinking level (e.g. minimal, low, medium, high)",
     )
     ollama_base_url: str = Field(
         default="http://localhost:11434",
@@ -126,6 +143,24 @@ class Settings(BaseSettings):
         default=15,
         description="Maximum number of stale PRs and Jira issues included in the LLM prompt",
     )
+    max_commit_lookups: int = Field(
+        default=15,
+        description="Maximum oldest stale PRs to fetch commit details for",
+    )
+    timezone: str = Field(
+        default="Asia/Kolkata",
+        description="IANA Timezone string for briefing formatting and time displays",
+    )
+
+    @field_validator("timezone", mode="after")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        """Validate timezone string using Python's zoneinfo library."""
+        try:
+            ZoneInfo(value.strip())
+            return value.strip()
+        except Exception as exc:
+            raise ValueError(f"Invalid timezone '{value}': {exc}") from exc
 
     @field_validator("jira_project_key", mode="after")
     @classmethod
@@ -151,6 +186,26 @@ class Settings(BaseSettings):
             return [repo.strip() for repo in value.split(",") if repo.strip()]
         if isinstance(value, (list, tuple, set)):
             return [str(repo).strip() for repo in value if str(repo).strip()]
+        return []
+
+    @field_validator("slack_approver_ids", mode="before")
+    @classmethod
+    def parse_slack_approver_ids(cls, value: Any) -> List[str]:
+        """Parse comma-separated user IDs or list into a cleaned list.
+
+        Args:
+            value: A string or list containing Slack user IDs.
+
+        Returns:
+            Cleaned list of Slack user ID strings.
+        """
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return []
+            return [uid.strip() for uid in value.split(",") if uid.strip()]
+        if isinstance(value, (list, tuple, set)):
+            return [str(uid).strip() for uid in value if str(uid).strip()]
         return []
 
 

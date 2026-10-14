@@ -15,10 +15,21 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.jira_project_key == ""
     assert settings.gemini_model == ""
     assert settings.gemini_fallback_model == ""
+    assert settings.gemini_thinking_level == "low"
+    assert settings.slack_approver_ids == []
+    assert settings.max_flags_in_briefing == 10
+    assert settings.dry_run_actions is False
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.ollama_model == "llama3"
     assert settings.abandoned_pr_days == 180
     assert settings.max_items_in_prompt == 15
+
+
+def test_slack_approver_ids_parsing() -> None:
+    """Test parsing comma-separated Slack approver user IDs into list."""
+    settings = Settings(slack_approver_ids=" U1234, U5678 , U9999 ", _env_file=None)  # type: ignore
+    assert settings.slack_approver_ids == ["U1234", "U5678", "U9999"]
+
 
 
 def test_github_repos_parsing_comma_separated() -> None:

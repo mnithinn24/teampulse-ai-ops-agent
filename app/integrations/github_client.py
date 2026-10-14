@@ -57,6 +57,7 @@ class GitHubClient:
         base_url: str = "https://api.github.com",
         rate_limiter: Optional[AsyncRateLimiter] = None,
         stale_pr_days: Optional[int] = None,
+        max_commit_lookups: Optional[int] = None,
         timeout: float = 30.0,
         client: Optional[httpx.AsyncClient] = None,
     ) -> None:
@@ -67,6 +68,7 @@ class GitHubClient:
             base_url: GitHub API base URL (default: https://api.github.com).
             rate_limiter: Optional AsyncRateLimiter instance (defaults to 5 req/s).
             stale_pr_days: Days threshold for staleness (falls back to settings).
+            max_commit_lookups: Maximum oldest stale PRs to fetch commit details for.
             timeout: Request timeout in seconds.
             client: Optional pre-configured httpx.AsyncClient instance.
         """
@@ -75,6 +77,9 @@ class GitHubClient:
         self.base_url = base_url.rstrip("/")
         self.stale_pr_days = (
             stale_pr_days if stale_pr_days is not None else settings.stale_pr_days
+        )
+        self.max_commit_lookups = (
+            max_commit_lookups if max_commit_lookups is not None else settings.max_commit_lookups
         )
         self.rate_limiter = rate_limiter or AsyncRateLimiter(rate=5.0, capacity=10.0)
         self.timeout = timeout
@@ -229,7 +234,7 @@ class GitHubClient:
             return []
 
         now = datetime.now(timezone.utc)
-        results: List[PullRequest] = []
+        pr_entries: List[Tuple[PullRequest, Optional[str]]] = []
 
         for pr_data in raw_prs:
             pr_id = pr_data.get("id") or pr_data.get("number", 0)
@@ -246,13 +251,47 @@ class GitHubClient:
             reviewers_data = pr_data.get("requested_reviewers", [])
             reviewers = [r.get("login") for r in reviewers_data if r.get("login")]
 
-            # Determine last commit days
-            # Attempt to fetch commits if available, or fall back to updated_at
-            last_commit_days = age_days
+            # Basic data without commit info: fall back to updated_at or age_days
+            updated_at_raw = pr_data.get("updated_at")
+            updated_at = self._parse_datetime(updated_at_raw) if updated_at_raw else None
+            if updated_at:
+                days_since_update = self._calculate_days_ago(updated_at, now)
+            else:
+                days_since_update = age_days
+
+            last_commit_days = days_since_update
+            is_stale = (age_days >= self.stale_pr_days) or (last_commit_days >= self.stale_pr_days)
+
+            pr = PullRequest(
+                id=pr_id,
+                number=pr_number,
+                title=title,
+                author=author,
+                age_days=age_days,
+                reviewers=reviewers,
+                last_commit_days=last_commit_days,
+                is_stale=is_stale,
+                repo=repo,
+                url=pr_data.get("html_url", ""),
+                created_at=created_at,
+                updated_at=updated_at,
+            )
             commits_url = pr_data.get("commits_url")
-            if commits_url:
+            pr_entries.append((pr, commits_url))
+
+        # Only fetch commit details for the MAX_COMMIT_LOOKUPS oldest stale PRs, concurrently with Semaphore(5)
+        stale_entries = [entry for entry in pr_entries if entry[0].is_stale]
+        sorted_stale = sorted(stale_entries, key=lambda e: e[0].age_days, reverse=True)
+        target_lookups = sorted_stale[: self.max_commit_lookups]
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _fetch_commit_details(pr_item: PullRequest, curl: Optional[str]) -> None:
+            if not curl:
+                return
+            async with semaphore:
                 try:
-                    commits_data = await self._request(commits_url, params={"per_page": 50})
+                    commits_data = await self._request(curl, params={"per_page": 50})
                     if isinstance(commits_data, list) and commits_data:
                         last_commit = commits_data[-1]
                         commit_details = last_commit.get("commit", {})
@@ -260,43 +299,20 @@ class GitHubClient:
                         commit_date_str = committer.get("date")
                         if commit_date_str:
                             last_commit_dt = self._parse_datetime(commit_date_str)
-                            last_commit_days = self._calculate_days_ago(last_commit_dt, now)
+                            pr_item.last_commit_days = self._calculate_days_ago(last_commit_dt, now)
+                            pr_item.is_stale = (pr_item.age_days >= self.stale_pr_days) or (pr_item.last_commit_days >= self.stale_pr_days)
                 except Exception as commit_err:
                     logger.debug(
-                        "Could not fetch commits for PR #%s in %s, falling back to updated_at: %s",
-                        pr_number,
-                        repo,
+                        "Could not fetch commits for PR #%s in %s: %s",
+                        pr_item.number,
+                        pr_item.repo,
                         commit_err,
                     )
-                    updated_at_raw = pr_data.get("updated_at")
-                    if updated_at_raw:
-                        updated_at_dt = self._parse_datetime(updated_at_raw)
-                        last_commit_days = self._calculate_days_ago(updated_at_dt, now)
 
-            # Stale if either age >= threshold or last commit age >= threshold
-            is_stale = (age_days >= self.stale_pr_days) or (last_commit_days >= self.stale_pr_days)
+        if target_lookups:
+            await asyncio.gather(*[_fetch_commit_details(item[0], item[1]) for item in target_lookups])
 
-            updated_at_raw = pr_data.get("updated_at")
-            updated_at = self._parse_datetime(updated_at_raw) if updated_at_raw else None
-
-            results.append(
-                PullRequest(
-                    id=pr_id,
-                    number=pr_number,
-                    title=title,
-                    author=author,
-                    age_days=age_days,
-                    reviewers=reviewers,
-                    last_commit_days=last_commit_days,
-                    is_stale=is_stale,
-                    repo=repo,
-                    url=pr_data.get("html_url", ""),
-                    created_at=created_at,
-                    updated_at=updated_at,
-                )
-            )
-
-        return results
+        return [entry[0] for entry in pr_entries]
 
     async def fetch_all_open_prs(self, repos: Optional[List[str]] = None) -> List[PullRequest]:
         """Fetch open pull requests across multiple configured repositories.

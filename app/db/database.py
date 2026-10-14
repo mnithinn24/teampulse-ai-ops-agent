@@ -97,15 +97,73 @@ def get_session_factory(engine: Optional[Engine] = None) -> sessionmaker[Session
     return factory
 
 
-def init_db(engine: Optional[Engine] = None) -> None:
-    """Create all database tables on application startup.
+def check_schema_drift(engine: Optional[Engine] = None) -> bool:
+    """Compare ORM model columns with actual database table columns.
+
+    Returns:
+        True if database schema matches all model columns, False if columns are missing.
+    """
+    from sqlalchemy import inspect
+    eng = engine or get_engine()
+    inspector = inspect(eng)
+    missing_columns = []
+
+    for table_name, table in Base.metadata.tables.items():
+        if inspector.has_table(table_name):
+            db_cols = {col["name"] for col in inspector.get_columns(table_name)}
+            model_cols = {col.name for col in table.columns}
+            missing = model_cols - db_cols
+            if missing:
+                missing_columns.extend([f"{table_name}.{col}" for col in missing])
+
+    if missing_columns:
+        logger.error("Schema out of date. Run scripts/reset_db.py")
+        return False
+    return True
+
+
+def check_unposted_pending_flags(engine: Optional[Engine] = None) -> None:
+    """Log a startup warning if pending flags older than 24h without slack_ts exist."""
+    from datetime import timedelta
+    from sqlalchemy import func, select
+    from app.core.constants import STATUS_PENDING
+    from app.db.models import Flag, utc_now
+
+    eng = engine or get_engine()
+    cutoff = utc_now() - timedelta(hours=24)
+    try:
+        factory = get_session_factory(eng)
+        with factory() as session:
+            stmt = select(func.count(Flag.id)).where(
+                Flag.status == STATUS_PENDING,
+                Flag.slack_ts.is_(None),
+                Flag.created_at < cutoff,
+            )
+            count = session.scalar(stmt) or 0
+            if count > 0:
+                logger.warning(
+                    "Startup check: found %d pending flag(s) older than 24h without slack_ts.",
+                    count,
+                )
+    except Exception as exc:
+        logger.debug("Could not verify unposted pending flags on startup: %s", exc)
+
+
+def init_db(engine: Optional[Engine] = None) -> bool:
+    """Create all database tables on application startup and check for schema drift.
 
     Args:
         engine: Optional Engine instance. Defaults to configured engine.
+
+    Returns:
+        True if schema is up to date, False if columns are missing.
     """
     eng = engine or get_engine()
     logger.info("Initializing database tables for engine: %s", eng.url)
     Base.metadata.create_all(bind=eng)
+    schema_ok = check_schema_drift(eng)
+    check_unposted_pending_flags(eng)
+    return schema_ok
 
 
 @contextmanager

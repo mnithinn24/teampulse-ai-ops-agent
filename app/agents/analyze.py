@@ -3,11 +3,21 @@
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.core.errors import AnalysisError
+from app.core.constants import (
+    FLAG_LEVEL_ESCALATED,
+    FLAG_LEVEL_NORMAL,
+    ITEM_TYPE_GITHUB_PR,
+    ITEM_TYPE_JIRA_ISSUE,
+    URGENCY_CRITICAL,
+    URGENCY_URGENT,
+    URGENCY_WATCH,
+)
+from app.core.errors import AnalysisError, InvalidJSONError
 from app.core.ids import (
     FULL_PR_REGEX,
     JIRA_KEY_REGEX,
@@ -54,14 +64,20 @@ def build_analysis_prompt(
     Returns:
         Structured plain text prompt.
     """
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    settings = get_settings()
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(settings.timezone)
+    except Exception:
+        tz = timezone.utc
+    today_str = datetime.now(tz).strftime("%Y-%m-%d")
 
     # Section 1: Role and Context
     prompt_lines = [
         "### ROLE AND DATE",
         "You are TeamPulse, an AI Operations Agent for engineering teams.",
         f"Workspace: {workspace_id}",
-        f"Today's Date: {today_str} (UTC)",
+        f"Today's Date: {today_str} ({settings.timezone})",
         "",
         "### OPERATIONAL THRESHOLDS",
         f"- Stale PR Threshold: {stale_pr_days} days of inactivity",
@@ -329,6 +345,7 @@ def get_recent_flags(workspace_id: str) -> List[Flag]:
             stmt = select(Flag).where(
                 Flag.workspace_id == workspace_id,
                 Flag.created_at >= cutoff,
+                Flag.slack_ts.is_not(None),
             )
             flags = list(session.scalars(stmt).all())
             session.expunge_all()
@@ -338,38 +355,12 @@ def get_recent_flags(workspace_id: str) -> List[Flag]:
         return []
 
 
-def save_flags_to_db(workspace_id: str, priority_flags: List[PriorityFlag]) -> None:
-    """Persist new priority flags to the database for future deduplication.
-
-    Args:
-        workspace_id: Team workspace identifier.
-        priority_flags: List of generated PriorityFlag items.
-    """
-    if not priority_flags:
-        return
-
-    try:
-        with get_db_session() as session:
-            for flag in priority_flags:
-                flag_record = Flag(
-                    workspace_id=workspace_id,
-                    item_type=flag.source,
-                    item_id=flag.item_id,
-                    flag_reason=flag.reason,
-                    flag_level=flag.urgency,
-                )
-                session.add(flag_record)
-        logger.info("Saved %d new flags to database for workspace %s", len(priority_flags), workspace_id)
-    except Exception as exc:
-        logger.warning("Failed to save flags to database: %s", exc)
-
-
 def build_rule_based_analysis(
     prs: List[PullRequest],
     tickets: List[JiraIssue],
     recent_flag_ids: Set[str],
 ) -> Analysis:
-    """Deterministic rule-based fallback summary when LLM generation fails twice.
+    """Deterministic rule-based fallback summary when LLM generation fails.
 
     Args:
         prs: Collected pull requests.
@@ -402,10 +393,10 @@ def build_rule_based_analysis(
         canon_id = canonical_id("github", pr.number or pr.id, repo=pr.repo)
 
         if pr.age_days >= abandoned_threshold:
-            urgency = "watch"
+            urgency = URGENCY_WATCH
             action = "Ask the author if still active, otherwise close"
         else:
-            urgency = "watch" if pr.age_days < 14 else "urgent"
+            urgency = URGENCY_WATCH if pr.age_days < 14 else URGENCY_URGENT
             action = f"Ping {reviewers_str} to complete review or close if obsolete"
 
         priority_flags.append(
@@ -413,7 +404,7 @@ def build_rule_based_analysis(
                 title=f"Stale PR: {pr.title}",
                 reason=f"Open for {pr.age_days}d by {pr.author} without commits in {pr.last_commit_days}d.",
                 urgency=urgency,
-                source="github",
+                source=ITEM_TYPE_GITHUB_PR,
                 item_id=canon_id,
                 suggested_action=action,
                 evidence=FlagEvidence(age_days=pr.age_days, author_or_assignee=pr.author),
@@ -427,8 +418,8 @@ def build_rule_based_analysis(
             PriorityFlag(
                 title=f"Stalled Ticket: [{t.key}] {t.title}",
                 reason=f"Inactive for {t.days_since_update}d in status '{t.status}' assigned to {assignee_str}.",
-                urgency="watch" if t.days_since_update < 21 else "urgent",
-                source="jira",
+                urgency=URGENCY_WATCH if t.days_since_update < 21 else URGENCY_URGENT,
+                source=ITEM_TYPE_JIRA_ISSUE,
                 item_id=canon_id,
                 suggested_action=f"Check in with {assignee_str} on status blockers",
                 evidence=FlagEvidence(age_days=t.age_days, author_or_assignee=t.assignee or ""),
@@ -541,50 +532,127 @@ async def analyze_workspace(
         abandoned_pr_days=settings.abandoned_pr_days,
     )
 
+    candidates = await llm_router.get_candidates(task_type="analysis")
     analysis: Optional[Analysis] = None
     model_name = "rule_based_fallback"
     latency_ms = 0.0
 
-    # Attempt 1: Standard analysis request
-    try:
-        result = await llm_router.route(
-            prompt=prompt,
-            schema=Analysis,
-            task_type="analysis",
-            system_prompt="You are TeamPulse. Output strictly valid JSON matching the schema.",
-        )
-        analysis = result.data
-        model_name = result.model_name
-        latency_ms = result.latency_ms
-    except Exception as first_err:
-        logger.warning("First analysis attempt failed: %s. Re-prompting with schema reminder...", first_err)
+    use_legacy_route = False
+    if not isinstance(candidates, list) or any(not isinstance(c, (list, tuple)) for c in candidates):
+        use_legacy_route = True
 
-        # Attempt 2: Re-prompt once with strict schema reminder (using schema placeholders, NO fake IDs)
-        schema_json = json.dumps(Analysis.model_json_schema(), indent=2)
-        reprompt = (
-            f"{prompt}\n\n"
-            f"### CRITICAL RE-PROMPT INSTRUCTION\n"
-            f"Your previous response was rejected due to an invalid schema or malformed JSON.\n"
-            f"Only reference item IDs that appear in the data above (e.g. '<copy an ID exactly from the lists above>').\n"
-            f"Never invent IDs or claims not present in the data.\n"
-            f"You MUST return ONLY valid JSON matching this exact JSON schema:\n{schema_json}"
-        )
-
+    if use_legacy_route:
         try:
+            logger.info("Attempting analysis with router route")
             result = await llm_router.route(
-                prompt=reprompt,
+                prompt=prompt,
                 schema=Analysis,
                 task_type="analysis",
-                system_prompt="Return ONLY raw JSON conforming to the schema. No markdown, no prose.",
+                system_prompt="You are TeamPulse. Output strictly valid JSON matching the schema.",
             )
             analysis = result.data
             model_name = result.model_name
             latency_ms = result.latency_ms
-        except Exception as second_err:
-            logger.error("Second analysis attempt failed: %s. Engaging rule-based fallback.", second_err)
-            analysis = build_rule_based_analysis(prs, tickets, recent_flag_ids)
-            model_name = "rule_based_fallback"
-            latency_ms = 0.0
+        except InvalidJSONError as json_err:
+            logger.warning(
+                "Router returned invalid JSON: %s. Re-prompting with schema reminder...",
+                json_err,
+            )
+            schema_json = json.dumps(Analysis.model_json_schema(), indent=2)
+            reprompt = (
+                f"{prompt}\n\n"
+                f"### CRITICAL RE-PROMPT INSTRUCTION\n"
+                f"Your previous response was rejected due to an invalid schema or malformed JSON.\n"
+                f"Only reference item IDs that appear in the data above (e.g. '<copy an ID exactly from the lists above>').\n"
+                f"Never invent IDs or claims not present in the data.\n"
+                f"You MUST return ONLY valid JSON matching this exact JSON schema:\n{schema_json}"
+            )
+            try:
+                result = await llm_router.route(
+                    prompt=reprompt,
+                    schema=Analysis,
+                    task_type="analysis",
+                    system_prompt="Return ONLY raw JSON conforming to the schema. No markdown, no prose.",
+                )
+                analysis = result.data
+                model_name = result.model_name
+                latency_ms = result.latency_ms
+            except Exception as reprompt_err:
+                logger.warning("Re-prompt failed: %s.", reprompt_err)
+        except Exception as provider_err:
+            logger.warning(
+                "Router failed with provider error (%s). Proceeding without re-prompt.",
+                provider_err,
+            )
+    else:
+        for provider, candidate_model in candidates:
+            try:
+                logger.info("Attempting analysis with candidate %s (%s)", provider, candidate_model)
+                result = await llm_router.call_candidate(
+                    provider=provider,
+                    model_name=candidate_model,
+                    prompt=prompt,
+                    schema=Analysis,
+                    task_type="analysis",
+                    system_prompt="You are TeamPulse. Output strictly valid JSON matching the schema.",
+                )
+                analysis = result.data
+                model_name = result.model_name
+                latency_ms = result.latency_ms
+                break
+            except InvalidJSONError as json_err:
+                logger.warning(
+                    "Candidate %s (%s) returned invalid JSON: %s. Re-prompting with schema reminder...",
+                    provider,
+                    candidate_model,
+                    json_err,
+                )
+                schema_json = json.dumps(Analysis.model_json_schema(), indent=2)
+                reprompt = (
+                    f"{prompt}\n\n"
+                    f"### CRITICAL RE-PROMPT INSTRUCTION\n"
+                    f"Your previous response was rejected due to an invalid schema or malformed JSON.\n"
+                    f"Only reference item IDs that appear in the data above (e.g. '<copy an ID exactly from the lists above>').\n"
+                    f"Never invent IDs or claims not present in the data.\n"
+                    f"You MUST return ONLY valid JSON matching this exact JSON schema:\n{schema_json}"
+                )
+                try:
+                    result = await llm_router.call_candidate(
+                        provider=provider,
+                        model_name=candidate_model,
+                        prompt=reprompt,
+                        schema=Analysis,
+                        task_type="analysis",
+                        system_prompt="Return ONLY raw JSON conforming to the schema. No markdown, no prose.",
+                    )
+                    analysis = result.data
+                    model_name = result.model_name
+                    latency_ms = result.latency_ms
+                    break
+                except Exception as reprompt_err:
+                    logger.warning(
+                        "Re-prompt for %s (%s) failed: %s. Proceeding to next candidate in router.",
+                        provider,
+                        candidate_model,
+                        reprompt_err,
+                    )
+                    continue
+            except Exception as provider_err:
+                logger.warning(
+                    "Candidate %s (%s) failed with provider error (%s). Proceeding to next candidate in router without re-prompt.",
+                    provider,
+                    candidate_model,
+                    provider_err,
+                )
+                continue
+
+    if analysis is None:
+        logger.info("All LLM candidates exhausted. Engaging rule-based fallback summary.")
+        analysis = build_rule_based_analysis(prs, tickets, recent_flag_ids)
+        model_name = "rule_based_fallback"
+        latency_ms = 0.0
+
+    logger.info("Final analysis choice: model=%s", model_name)
 
     # Grounding Check: Normalize and rewrite flag item_id, drop unknown IDs, and ground reasons & evidence
     grounded_flags: List[PriorityFlag] = []
@@ -619,13 +687,27 @@ async def analyze_workspace(
                     flag.evidence.age_days = real_age
                     flag.evidence.author_or_assignee = real_author
 
+            # Build displayed reason from evidence in code without any model numbers
+            if isinstance(real_item, PullRequest):
+                rev_str = f"reviewers: {', '.join(real_item.reviewers)}" if real_item.reviewers else "no reviewers"
+                base_reason = f"Open for {real_item.age_days} days, {rev_str}, last activity {real_item.last_commit_days} days ago"
+            else:
+                assignee_str = f"assigned to {real_item.assignee}" if real_item.assignee else "unassigned"
+                base_reason = f"Open for {real_item.age_days} days, {assignee_str}, last activity {real_item.days_since_update} days ago"
+
             # Check unsupported claims in reason
             if has_unsupported_claim(flag.reason, real_item):
                 logger.info("Unsupported claim found in reason for %s. Replacing with rule-based facts.", canon_id)
-                if isinstance(real_item, PullRequest):
-                    flag.reason = f"Open for {real_item.age_days}d by {real_item.author} with no commits in {real_item.last_commit_days}d."
+                flag.reason = base_reason
+            else:
+                # Keep LLM text only for non-numeric explanation, removing any digits before display
+                cleaned_llm = re.sub(r"\d+", "", flag.reason or "").strip()
+                cleaned_llm = re.sub(r"(?i)\b(open for|inactive for|no commits in|last activity|no activity for)\s+days?\b", "", cleaned_llm)
+                cleaned_llm = re.sub(r"\s+", " ", cleaned_llm).strip(" .,;:-")
+                if cleaned_llm and len(cleaned_llm) > 3 and cleaned_llm.lower() not in base_reason.lower():
+                    flag.reason = f"{base_reason}. {cleaned_llm}"
                 else:
-                    flag.reason = f"Inactive for {real_item.days_since_update}d in status '{real_item.status}' assigned to {real_item.assignee or 'unassigned'}."
+                    flag.reason = base_reason
 
             # Check abandoned PR rules (age >= abandoned_pr_days)
             if isinstance(real_item, PullRequest) and real_item.age_days >= settings.abandoned_pr_days:
@@ -675,8 +757,4 @@ async def analyze_workspace(
                 generate_stale_fallback_sentence(prs, tickets, field_type="pattern")
             )
     analysis.patterns = grounded_patterns
-
-    # Save new priority flags to database for deduplication on next run
-    save_flags_to_db(workspace_id, analysis.priority_flags)
-
     return analysis, model_name, latency_ms

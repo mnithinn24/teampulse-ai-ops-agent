@@ -9,7 +9,7 @@ from app.agents.analyze import (
     build_analysis_prompt,
     build_rule_based_analysis,
 )
-from app.core.errors import AnalysisError
+from app.core.errors import AnalysisError, InvalidJSONError
 from app.core.ids import canonical_id, normalize_llm_id
 from app.db.database import get_db_session, get_engine, init_db
 from app.db.models import Base, Flag
@@ -269,10 +269,10 @@ def test_build_prompt_limits_stale_items_and_shows_totals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyze_workspace_valid_json_and_saves_flags(
+async def test_analyze_workspace_valid_json_does_not_save_flags(
     sample_stale_pr: PullRequest, sample_stale_ticket: JiraIssue
 ) -> None:
-    """Test successful LLM analysis saves new priority flags to database."""
+    """Test successful LLM analysis does not save flags to database (Act node is writer)."""
     valid_analysis = Analysis(
         patterns=["2 items stalled across review and development"],
         priority_flags=[
@@ -312,11 +312,10 @@ async def test_analyze_workspace_valid_json_and_saves_flags(
     assert len(analysis.priority_flags) == 1
     assert analysis.one_recommendation == "Clear database PR blocker acme/service#10"
 
-    # Verify saved flag in database
+    # Verify analyze node does NOT write flags into database
     with get_db_session() as session:
         saved_flags = list(session.query(Flag).filter(Flag.workspace_id == "ws-valid-save").all())
-        assert len(saved_flags) == 1
-        assert saved_flags[0].item_id == "acme/service#10"
+        assert len(saved_flags) == 0
 
 
 @pytest.mark.asyncio
@@ -334,7 +333,7 @@ async def test_analyze_workspace_reprompts_on_first_failure(
 
     mock_router = AsyncMock(spec=LLMRouter)
     mock_router.route.side_effect = [
-        AnalysisError("Malformed JSON output"),
+        InvalidJSONError("Malformed JSON output"),
         LLMResult(
             data=recovered_analysis,
             model_name="llama3.1:latest",
@@ -364,8 +363,8 @@ async def test_analyze_workspace_malformed_twice_uses_rule_based_fallback(
     """Test falling back to rule-based summary when both LLM attempts fail."""
     mock_router = AsyncMock(spec=LLMRouter)
     mock_router.route.side_effect = [
-        AnalysisError("First JSON parse error"),
-        AnalysisError("Second JSON parse error"),
+        InvalidJSONError("First JSON parse error"),
+        InvalidJSONError("Second JSON parse error"),
     ]
 
     state = TeamPulseState(
@@ -400,6 +399,7 @@ async def test_analyze_workspace_deduplicates_recent_flags(
             item_id="acme/service#10",
             flag_reason="stale",
             flag_level="watch",
+            slack_ts="1234567890.123456",
         )
         session.add(old_flag)
 
@@ -755,7 +755,8 @@ async def test_unsupported_claim_in_reason_is_replaced(
     flag = analysis.priority_flags[0]
     assert "security" not in flag.reason.lower()
     assert "credential" not in flag.reason.lower()
-    assert "Open for 15d by alice with no commits in 10d." in flag.reason
+    assert "Open for 15 days" in flag.reason
+    assert "last activity 10 days ago" in flag.reason
 
 
 @pytest.mark.asyncio

@@ -67,9 +67,14 @@ class AnalysisError(TeamPulseError):
     """Raised when LLM analysis, prompt validation, or parsing fails."""
 
 
+class InvalidJSONError(AnalysisError):
+    """Raised when LLM returns malformed JSON or invalid schema output."""
+
+
 class ActionError(TeamPulseError):
     """Raised when an action (e.g., Jira ticket creation, comment, or notification) fails."""
 
 
 class ConfigurationError(TeamPulseError):
     """Raised when configuration validation or environment variables are missing/invalid."""
+

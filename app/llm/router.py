@@ -45,6 +45,54 @@ class LLMRouter:
         """
         self.ollama_client = ollama_client or OllamaClient()
         self.gemini_client = gemini_client or GeminiClient()
+    async def get_candidates(self, task_type: str = "analysis") -> List[Tuple[str, str]]:
+        """Return prioritized list of (provider, model_name) candidates.
+
+        Order for complex tasks: Gemini main -> Gemini fallback -> Ollama.
+        Order for simple tasks: Ollama -> Gemini main -> Gemini fallback.
+        """
+        settings = get_settings()
+        is_simple_task = task_type.lower() in SIMPLE_TASK_TYPES
+
+        ollama_available = False
+        if settings.ollama_enabled:
+            ollama_available = await self.ollama_client.check_health()
+
+        candidates: List[Tuple[str, str]] = []
+        if is_simple_task and ollama_available:
+            candidates.append(("ollama", settings.ollama_model))
+            if settings.gemini_api_key and settings.gemini_model:
+                candidates.append(("gemini", settings.gemini_model))
+            if settings.gemini_api_key and settings.gemini_fallback_model:
+                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
+        else:
+            if settings.gemini_api_key and settings.gemini_model:
+                candidates.append(("gemini", settings.gemini_model))
+            if settings.gemini_api_key and settings.gemini_fallback_model:
+                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
+            if ollama_available:
+                candidates.append(("ollama", settings.ollama_model))
+
+        return candidates
+
+    async def call_candidate(
+        self,
+        provider: str,
+        model_name: str,
+        prompt: str,
+        schema: Type[T],
+        task_type: str = "analysis",
+        system_prompt: Optional[str] = None,
+    ) -> LLMResult[T]:
+        """Execute call against a specific candidate model and measure latency."""
+        return await self._call_provider(
+            provider=provider,
+            prompt=prompt,
+            schema=schema,
+            task_type=task_type,
+            system_prompt=system_prompt,
+            model_override=model_name,
+        )
 
     async def route(
         self,
@@ -74,30 +122,7 @@ class LLMRouter:
         Raises:
             AnalysisError: If both preferred and fallback models fail.
         """
-        settings = get_settings()
-        is_simple_task = task_type.lower() in SIMPLE_TASK_TYPES
-
-        # Check Ollama feasibility
-        ollama_available = False
-        if settings.ollama_enabled:
-            ollama_available = await self.ollama_client.check_health()
-
-        # Build prioritized list of (provider, model_name) to attempt
-        candidates: List[Tuple[str, str]] = []
-        if is_simple_task and ollama_available:
-            candidates.append(("ollama", settings.ollama_model))
-            if settings.gemini_api_key and settings.gemini_model:
-                candidates.append(("gemini", settings.gemini_model))
-            if settings.gemini_api_key and settings.gemini_fallback_model:
-                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
-        else:
-            if settings.gemini_api_key and settings.gemini_model:
-                candidates.append(("gemini", settings.gemini_model))
-            if settings.gemini_api_key and settings.gemini_fallback_model:
-                candidates.append(("gemini_fallback", settings.gemini_fallback_model))
-            if ollama_available:
-                candidates.append(("ollama", settings.ollama_model))
-
+        candidates = await self.get_candidates(task_type=task_type)
         if not candidates:
             raise AnalysisError("No configured LLM providers available (check GEMINI_API_KEY or OLLAMA_BASE_URL).")
 
@@ -105,13 +130,13 @@ class LLMRouter:
         for provider, model_name in candidates:
             try:
                 logger.info("Invoking %s (model: %s) for task '%s'", provider, model_name, task_type)
-                return await self._call_provider(
+                return await self.call_candidate(
                     provider=provider,
+                    model_name=model_name,
                     prompt=prompt,
                     schema=schema,
                     task_type=task_type,
                     system_prompt=system_prompt,
-                    model_override=model_name,
                 )
             except Exception as exc:
                 logger.warning(
