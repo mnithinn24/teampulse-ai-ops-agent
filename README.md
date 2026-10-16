@@ -1,0 +1,416 @@
+
+AI operations agent that monitors GitHub pull requests and Jira tickets, detects stale work, and sends daily briefings with human approval buttons to Slack.
+
+## 1. Summary
+
+TeamPulse reads open work from GitHub and Jira, identifies items that need attention, and delivers a formatted briefing to Slack. Engineering leads can click buttons in Slack to approve actions such as creating triage tickets.
+
+## 2. What Problem It Solves
+
+Small engineering teams lose track of aging pull requests and stalled Jira tickets.
+Reviewers forget open code reviews, and blockers sit unattended across multiple tools.
+Every morning, team leads waste time manually checking GitHub tabs and Jira boards.
+
+Example: A developer opens a pull request on Monday. Nobody is assigned to review it. By Thursday, the author has moved to another task, and the code sits untouched. TeamPulse detects that the pull request has had no activity for over 7 days, includes it in the morning Slack briefing, and gives the team lead an "Approve" button to create a Jira triage ticket with one click.
+
+## 3. What It Does
+
+| Feature | What Happens | Where in the Code |
+| :--- | :--- | :--- |
+| Collect GitHub PRs | Fetches open pull requests and computes age and days since last commit | [app/integrations/github_client.py](file:///d:/teampulse/app/integrations/github_client.py) |
+| Collect Jira tickets | Fetches open issues and computes days since last update and comment counts | [app/integrations/jira_client.py](file:///d:/teampulse/app/integrations/jira_client.py) |
+| Stale item detection | Flags pull requests older than `STALE_PR_DAYS` (default 7) and tickets older than `STALE_TICKET_DAYS` (default 14) | [app/graph/pipeline.py](file:///d:/teampulse/app/graph/pipeline.py) |
+| LLM analysis & fallback | Classifies priority and suggests actions using Gemini or Ollama; falls back to rule-based summary if models fail or return invalid JSON | [app/llm/router.py](file:///d:/teampulse/app/llm/router.py), [app/llm/schemas.py](file:///d:/teampulse/app/llm/schemas.py) |
+| Grounding check | Verifies all LLM-flagged IDs exist in collected data; blocks invented items and grounds facts to real data | [app/graph/pipeline.py](file:///d:/teampulse/app/graph/pipeline.py) |
+| Slack briefing | Builds Slack Block Kit layout with date header, totals line, categorized priority flags, and Approve / Dismiss buttons | [app/agents/briefing.py](file:///d:/teampulse/app/agents/briefing.py) |
+| Human approval | Write actions are never automatic; clicking "Approve" in Slack executes the action, clicking "Dismiss" marks it dismissed | [app/api/routes/slack.py](file:///d:/teampulse/app/api/routes/slack.py), [app/agents/actions.py](file:///d:/teampulse/app/agents/actions.py) |
+| Jira ticket creation | On approval, creates a Jira issue with summary "Triage stale PR <id>"; checks for duplicates first | [app/agents/actions.py](file:///d:/teampulse/app/agents/actions.py) |
+| Natural language query | Answers operational questions (e.g. rank by age, count by author, item lookup) over 100% of collected data | [app/agents/query.py](file:///d:/teampulse/app/agents/query.py), [app/api/routes/briefing.py](file:///d:/teampulse/app/api/routes/briefing.py) |
+| Scheduled jobs | Runs automated briefings at configured morning and evening times using APScheduler | [app/scheduler/jobs.py](file:///d:/teampulse/app/scheduler/jobs.py) |
+| Audit logging | Saves all runs, flags, and approved/dismissed actions into database tables | [app/db/models.py](file:///d:/teampulse/app/db/models.py) |
+| Dry-run mode | When `DRY_RUN_ACTIONS=true`, logs proposed write operations without creating real Jira issues or posting modifications | [app/config.py](file:///d:/teampulse/app/config.py), [app/agents/actions.py](file:///d:/teampulse/app/agents/actions.py) |
+
+## 4. How the Flow Works
+
+```mermaid
+flowchart TD
+    A[Trigger: Schedule / API / Slash Command] --> B[Collect Node]
+    B -->|Fetch in parallel| C[GitHub API]
+    B -->|Fetch in parallel| D[Jira API]
+    C --> E[Compute item ages & stale status]
+    D --> E
+    E --> F[Analyze Node]
+    F -->|Route Prompt| G[LLM Router: Ollama / Gemini]
+    G -->|Pydantic validation & grounding check| H[Deduplicated Priority Flags]
+    H --> I[Act Node]
+    I -->|Format Block Kit| J[Post Briefing to Slack]
+    J --> K[Human Review in Slack]
+    K -->|Click Approve| L[POST /slack/actions]
+    L -->|Verify HMAC & Duplicate Check| M[Create Jira Ticket & Update Slack Block]
+    K -->|Click Dismiss| N[Mark Flag Dismissed & Update Slack Block]
+```
+
+### Step-by-Step Description
+1. **Trigger**: The pipeline starts from a scheduled cron job (APScheduler), a manual CLI call (`scripts/post_briefing.py`), an API request (`POST /briefing/trigger`), or a Slack command (`/teampulse brief`).
+2. **Collect**: GitHub pull requests and Jira issues are fetched concurrently using `asyncio.gather`. Each item gets an age in days and a stale flag. If a source fails, it is marked unavailable and collection continues.
+3. **Analyze**: The LLM analyzes the items, filters items flagged within the last 24 hours, and returns structured flags. All output is validated with Pydantic schemas. If the model fails, the system switches to deterministic rule-based analysis.
+4. **Grounding**: Before flags reach the briefing, the system verifies that every item ID exists in the real fetched data. Hallucinated IDs are dropped, and evidence fields (author, age) are replaced with real data.
+5. **Act**: The system builds a Slack Block Kit message. If all data sources succeeded and no stale items exist, it outputs an "All clear!" message. If a source failed, it places a clear warning banner at the top.
+6. **Slack Delivery**: The briefing is posted to the configured Slack channel. Flags are saved to the database only after Slack confirms delivery.
+7. **Human Approval**: The message displays "Approve" and "Dismiss" buttons. When a user clicks "Approve", Slack sends an HMAC-signed interaction to `/slack/actions`.
+8. **Execution**: The server validates the signature, checks for existing duplicate tickets in Jira, creates the ticket if needed, logs the action to `actions_taken`, and updates the Slack block with the resolution.
+
+## 5. Project Structure
+
+```text
+teampulse/
+├── app/
+│   ├── agents/
+│   │   ├── actions.py       # Executes approved Slack actions and duplicate prevention
+│   │   ├── briefing.py      # Builds Slack Block Kit layout, warnings, and formatting
+│   │   └── query.py         # Handles natural language queries, ranking, and counts
+│   ├── api/
+│   │   ├── main.py          # FastAPI app, lifespan setup, and health check route
+│   │   └── routes/
+│   │       ├── briefing.py  # Routes for manual trigger, run history, and /query
+│   │       └── slack.py     # Routes for Slack button clicks and /teampulse slash commands
+│   ├── core/
+│   │   ├── constants.py     # Shared constants (urgency levels, status strings)
+│   │   ├── errors.py        # Exception hierarchy and single-line log error formatter
+│   │   ├── ids.py           # Canonical ID parsing and grounding validators
+│   │   ├── rate_limiter.py  # Rate limiter utilities for API requests
+│   │   ├── retry.py         # Async retry with exponential backoff and jitter
+│   │   └── security.py      # HMAC-SHA256 Slack signature and timestamp verification
+│   ├── db/
+│   │   ├── database.py      # SQLAlchemy 2.0 engine and session factory
+│   │   └── models.py        # Database models (workspaces, agent_runs, flags, actions_taken)
+│   ├── graph/
+│   │   ├── pipeline.py      # LangGraph 3-node state machine (Collect, Analyze, Act)
+│   │   ├── runner.py        # Workspace execution lock and background task runner
+│   │   └── state.py         # TeamPulseState Pydantic model for graph state
+│   ├── integrations/
+│   │   ├── github_client.py # Async GitHub client (pull requests, commits, rate limits)
+│   │   ├── jira_client.py   # Async Jira client (issues, JQL search, issue creation)
+│   │   └── slack_client.py  # Async Slack client (post message, update block, ephemeral)
+│   ├── llm/
+│   │   ├── gemini_client.py # Google Gemini API client
+│   │   ├── ollama_client.py # Local Ollama REST client
+│   │   ├── router.py        # Multi-provider router with fallback and quota tracking
+│   │   └── schemas.py       # Pydantic schemas for analysis and structured outputs
+│   ├── scheduler/
+│   │   └── jobs.py          # Background APScheduler morning and evening cron jobs
+│   └── config.py            # Central settings loaded from environment variables
+├── evals/
+│   ├── fixtures.py          # Deterministic 88-PR and 3-Jira synthetic datasets
+│   ├── labeled_cases.json   # 48 labeled evaluation test cases across 9 categories
+│   ├── REPORT.md            # Generated accuracy and latency evaluation report
+│   └── run_eval.py          # Offline deterministic evaluation runner script
+├── scripts/
+│   ├── check_stale_prs.py   # CLI script to inspect stale GitHub PRs directly
+│   ├── check_stale_tickets.py# CLI script to inspect stale Jira tickets directly
+│   ├── eval_live_snapshot.py# CLI script to snapshot real data for local testing
+│   ├── post_briefing.py     # CLI script to execute full pipeline and send to Slack
+│   ├── reset_db.py          # Development utility to drop and recreate database tables
+│   ├── run_graph.py         # CLI script to execute the LangGraph pipeline locally
+│   └── show_metrics.py      # CLI script to print database run and action statistics
+├── tests/                   # 170 pytest unit tests covering all components
+├── PROJECT_SPEC.md          # Technical project specification
+└── requirements.txt         # Pinned Python dependencies
+```
+
+| Folder or File | What Is Inside | When a Developer Edits It |
+| :--- | :--- | :--- |
+| `app/agents/` | Briefing formatting, Slack action execution, query answering | To change Slack message layouts, add new action types, or tune query rules |
+| `app/api/` | FastAPI routes for Slack webhooks, briefing trigger, and health | To add new HTTP endpoints or change webhook handling |
+| `app/core/` | Security, error definitions, retries, and ID validators | To modify HMAC signature checking, retry delays, or custom errors |
+| `app/db/` | Database tables and connection lifecycle | To add new database tables or migrate existing columns |
+| `app/graph/` | LangGraph nodes and execution pipeline | To add pipeline steps or change how items are analyzed |
+| `app/integrations/` | External API clients for GitHub, Jira, and Slack | To support new GitHub/Jira fields or update API versions |
+| `app/llm/` | Model routing, Gemini and Ollama clients, Pydantic schemas | To adjust prompts, add new LLM providers, or change schemas |
+| `app/scheduler/` | APScheduler setup and cron triggers | To adjust briefing schedules or add recurring background tasks |
+| `app/config.py` | Pydantic configuration settings | To introduce new environment variables or change default values |
+| `evals/` | Labeled cases, synthetic datasets, and eval runner | To add regression test cases for operations or evaluation metrics |
+| `scripts/` | Standalone CLI tools for debugging and manual execution | To create helper commands or inspect data locally |
+| `tests/` | Pytest suite with mocks for external services | To add unit tests for new features or bug fixes |
+
+## 6. Design Decisions
+
+| Decision | Why |
+| :--- | :--- |
+| Router with fallback | Protects against model outages and rate limits. Tries primary candidates (Ollama or Gemini), falls back to secondary candidates, and falls back to deterministic rules if all models fail. |
+| Grounding check | Prevents hallucinated pull request numbers or Jira keys from ever appearing in Slack briefings. Only verified items from real data survive. |
+| Code computes, LLM phrases | LLMs can make arithmetic errors when counting or sorting large lists. Python code handles 100% of ranking, counting, and filtering. The LLM is only used to format natural text. |
+| Human approval required | An automated agent should not modify project boards or create tickets without oversight. Suggested write actions require an explicit button click by an authorized user in Slack. |
+| HMAC signature verification | Slack webhooks must be verified using HMAC-SHA256 and a 5-minute timestamp window to ensure requests genuinely come from Slack and cannot be replayed. |
+| Duplicate ticket check | Before creating a Jira ticket for a stale PR, the agent searches Jira for existing tickets containing the canonical ID, preventing duplicate spam. |
+| Flags saved after Slack post | If Slack is unreachable, flags are not saved to the database. This ensures the next run will still find and surface the unnotified items rather than skipping them as previously reported. |
+| Failed source shows WARNING, not All clear | A failed GitHub or Jira connection must never be masked as "zero issues". If collection fails, the briefing displays a prominent warning banner and marks counts as `unknown`. |
+
+## 7. Tech Stack
+
+| Tool | Used For |
+| :--- | :--- |
+| Python 3.14 | Programming language runtime |
+| FastAPI | Web framework for Slack interaction webhooks and HTTP endpoints |
+| Uvicorn | ASGI server running the FastAPI application |
+| LangGraph | State machine managing the 3-node pipeline (Collect -> Analyze -> Act) |
+| Pydantic v2 | Data validation and structured schema enforcement |
+| SQLAlchemy 2.0 | Database ORM supporting MySQL for development and SQLite for tests |
+| PyMySQL | MySQL database driver for Python |
+| HTTPX | Asynchronous HTTP client for Jira, Slack, Ollama, and webhooks |
+| PyGithub | Client library for GitHub REST API interaction |
+| APScheduler | In-process background scheduler for morning and evening briefings |
+| Google GenAI SDK | Client SDK for Google Gemini models |
+| Pytest & Pytest-Asyncio | Testing framework for running the 170 unit tests |
+
+## 8. Setup for a Beginner
+
+### Prerequisites
+- Python 3.11 or newer (Python 3.14 used in development).
+- MySQL Server installed locally (or access to a remote MySQL instance).
+- Git installed on your system.
+- Access tokens for GitHub, Jira Cloud, and Slack (for live operation).
+
+### Step 1: Clone the Repository
+```bash
+git clone https://github.com/mnithinn24/teampulse-ai-ops-agent.git
+cd teampulse-ai-ops-agent
+```
+
+### Step 2: Create and Activate Virtual Environment
+On Windows (PowerShell):
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+On Linux or macOS:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### Step 3: Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### Step 4: Configure Environment Variables
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
+
+Open `.env` in your text editor and fill in your settings.
+
+### Configuration Settings Reference
+
+| Setting Name | Meaning |
+| :--- | :--- |
+| `GITHUB_TOKEN` | Personal access token for reading GitHub pull requests and commits |
+| `GITHUB_REPOS` | Comma-separated list of GitHub repositories in `owner/repo` format |
+| `JIRA_BASE_URL` | Base URL of your Atlassian Jira instance |
+| `JIRA_EMAIL` | Account email associated with the Jira API token |
+| `JIRA_API_TOKEN` | API token generated from your Atlassian account |
+| `JIRA_PROJECT_KEY` | Project key in Jira where issues are tracked and created |
+| `SLACK_BOT_TOKEN` | Bot user OAuth token starting with `xoxb-` |
+| `SLACK_SIGNING_SECRET` | Slack app signing secret used to verify request HMAC signatures |
+| `SLACK_CHANNEL_ID` | Channel ID where TeamPulse posts the daily briefing |
+| `SLACK_APPROVER_IDS` | Optional comma-separated list of Slack user IDs allowed to approve actions |
+| `MAX_FLAGS_IN_BRIEFING` | Maximum number of priority items displayed in one Slack briefing |
+| `DRY_RUN_ACTIONS` | When true, logs actions without creating real Jira tickets |
+| `GEMINI_API_KEY` | API key for Google Gemini LLM access |
+| `GEMINI_MODEL` | Primary Gemini model name |
+| `GEMINI_FALLBACK_MODEL` | Fallback Gemini model name if the primary model is unavailable |
+| `GEMINI_THINKING_LEVEL` | Thinking budget level for Gemini models (`low` or `normal`) |
+| `OLLAMA_BASE_URL` | URL of local Ollama server |
+| `OLLAMA_MODEL` | Model name to invoke in local Ollama |
+| `OLLAMA_ENABLED` | Set to true to allow local Ollama model routing |
+| `LLM_TIMEOUT_SECONDS` | Network timeout in seconds for LLM API calls |
+| `STALE_PR_DAYS` | Inactivity threshold in days to flag a pull request as stale |
+| `STALE_TICKET_DAYS` | Inactivity threshold in days to flag a Jira ticket as stale |
+| `ABANDONED_PR_DAYS` | Threshold in days to classify an aging pull request as abandoned |
+| `MAX_ITEMS_IN_PROMPT` | Maximum number of items sent in a single prompt to an LLM |
+| `MAX_COMMIT_LOOKUPS` | Cap on individual commit lookups to prevent GitHub rate limit exhaustion |
+| `DATABASE_URL` | SQLAlchemy connection URL for MySQL |
+| `TIMEZONE` | IANA timezone string for briefing dates and rate limit display |
+| `ENABLE_SCHEDULER` | Set to true to start the background briefing scheduler |
+| `MORNING_BRIEFING_TIME` | 24-hour time string (`HH:MM`) for morning briefing run |
+| `EVENING_BRIEFING_TIME` | 24-hour time string (`HH:MM`) for evening briefing run |
+| `ADMIN_API_KEY` | Secret token required in `X-API-Key` header for protected API routes |
+| `QUERY_RATE_LIMIT_PER_MINUTE` | Max queries per minute permitted per API key on the `/query` endpoint |
+| `QUERY_CACHE_TTL_SECONDS` | Cache duration in seconds for collected PRs and tickets |
+| `QUERY_LLM_REPHRASE` | Set to true to have LLM rephrase answers; false returns code-built answers |
+
+### Step 5: Create the Database
+Log into MySQL and create the database schema:
+```sql
+CREATE DATABASE teampulse CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+Update `DATABASE_URL` in `.env`:
+```text
+DATABASE_URL=mysql+pymysql://<user>:<password>@localhost:3306/teampulse
+```
+
+### Step 6: Initialize Database Tables
+Run the database reset script to create all tables:
+```bash
+python scripts/reset_db.py --yes
+```
+Expected output:
+```text
+Resetting database at 'mysql+pymysql://<user>:***@localhost:3306/teampulse'...
+Database tables successfully dropped and recreated.
+```
+
+## 9. How to Run
+
+### 1. Start the API Server
+Run the FastAPI development server:
+```bash
+uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+```
+Expected output:
+```text
+INFO:     Started server process
+INFO:     Waiting for application startup.
+INFO:     Initializing TeamPulse database schema on startup...
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+```
+
+Verify that the server is alive:
+```bash
+curl http://localhost:8000/health
+```
+Expected response:
+```json
+{"status":"ok","app":"TeamPulse","scheduler_status":"disabled","last_run_time":null}
+```
+
+### 2. Expose Local Server for Slack (ngrok)
+Slack requires a public HTTPS URL to deliver button clicks and slash commands.
+In a new terminal, run:
+```bash
+ngrok http 8000
+```
+Copy the `https://<unique-id>.ngrok-free.app` URL.
+
+In your Slack App Settings:
+- Under **Interactivity & Shortcuts**, set **Request URL** to:
+  `https://<unique-id>.ngrok-free.app/slack/actions`
+- Under **Slash Commands**, set the Request URL for `/teampulse` to:
+  `https://<unique-id>.ngrok-free.app/slack/commands`
+
+### 3. Run On-Demand Briefing via CLI
+To test the pipeline and post a briefing directly to your Slack channel:
+```bash
+python scripts/post_briefing.py
+```
+Expected output:
+```text
+============================================================
+ TeamPulse Ops Briefing Runner (Phase 4)
+============================================================
+Workspace: default
+Run Type : ondemand
+Repos    : ...
+Jira Proj: ...
+Channel  : C0123456789
+============================================================
+[1/3] Initializing database...
+[2/3] Executing LangGraph pipeline (Collect -> Analyze -> Act)...
+============================================================
+ Pipeline Execution Complete
+============================================================
+Flags Saved to DB: 2
+Slack Status     : Posted to channel C0123456789 (ts: 1718000000.000100)
+```
+
+### 4. Use the `/teampulse` Slack Slash Command
+In any Slack channel where the bot is invited, type:
+- `/teampulse help` : Displays command instructions.
+- `/teampulse brief` : Manually triggers a briefing run in the background.
+- `/teampulse ask <question>` : Answers questions such as "How many stale pull requests are there?".
+- `/teampulse status` : Displays the status and latency of the most recent agent run.
+
+## 10. How to Test
+
+Run the full automated test suite:
+```bash
+pytest -q
+```
+Expected output:
+```text
+170 passed, 1 warning in 12.09s
+```
+
+Run the offline deterministic evaluation suite:
+```bash
+python evals/run_eval.py
+```
+Expected output:
+```text
+==========================================================================================
+                        TeamPulse Phase 6 Evaluation Suite
+==========================================================================================
+Category                 Cases    Passed   Accuracy   Mean (ms)    p95 (ms)  
+------------------------------------------------------------------------------------------
+action_safety            5        5        100.0%     4.03         15.54     
+briefing_wording         5        5        100.0%     0.08         0.18      
+failure_handling         5        5        100.0%     0.36         1.04      
+grounding                6        6        100.0%     0.06         0.1       
+query_count              6        6        100.0%     27.56        29.04     
+query_lookup             5        5        100.0%     27.74        27.86     
+query_out_of_scope       5        5        100.0%     27.13        27.73     
+query_rank               5        5        100.0%     39.8         70.93     
+stale_detection          6        6        100.0%     0.0          0.01      
+==========================================================================================
+Overall: 48/48 passed (100.0%) | p50: 0.44 ms | p95: 29.45 ms
+Grounding Protection: 2/2 invented IDs blocked (simulated LLM output)
+==========================================================================================
+SUCCESS: All deterministic evaluation cases passed!
+```
+
+## 11. Evaluation Suite & Limits
+
+The evaluation suite executes 48 deterministic test cases without calling real external APIs:
+- **`action_safety` (5 cases)**: Verifies HMAC signature checking, expired timestamp rejection, and approver authorization.
+- **`briefing_wording` (5 cases)**: Checks header formatting, totals text, and ensures "All clear" only shows when all conditions are met.
+- **`failure_handling` (5 cases)**: Ensures data source failures show warning banners with sanitized messages without leaking credentials.
+- **`grounding` (6 cases)**: Verifies that hallucinated PR and Jira IDs invented by an LLM are blocked and replaced with real fixture values.
+- **`query_count` (6 cases)**: Tests exact PR and ticket counts, including author filters (`alice`, `bob`).
+- **`query_lookup` (5 cases)**: Tests retrieving specific PRs and tickets by canonical ID and returning not-found messages for missing IDs.
+- **`query_out_of_scope` (5 cases)**: Ensures unrelated questions (weather, general trivia) are rejected without fetching data.
+- **`query_rank` (5 cases)**: Validates sorting by age or inactivity over the full dataset.
+- **`stale_detection` (6 cases)**: Validates stale boundary logic for pull requests and Jira issues.
+
+### Honest Limits
+1. **Synthetic Data**: Deterministic evaluation uses fixed synthetic datasets (88 pull requests with ages 20–3300 days and 3 Jira tickets) generated with random seed 42.
+2. **Simulated LLM Outputs**: Grounding and safety tests run against fixed test fixtures and simulated responses to ensure reproducible evaluation without live API dependencies.
+3. **Live LLM Sample Size**: Live evaluation (`--with-llm`) is capped at 6 calls total to avoid exceeding free-tier rate limits. Live LLM metrics are recorded separately in `evals/REPORT.md` and are not part of the 100% deterministic suite score.
+
+## 12. Safety Notes
+
+- **`DRY_RUN_ACTIONS`**: Always set `DRY_RUN_ACTIONS=true` during testing. When true, clicking "Approve" logs the action to `actions_taken` without modifying Jira or creating real tickets.
+- **Never Commit `.env`**: The `.env` file contains production secrets and access tokens. It is excluded in `.gitignore`. Only commit `.env.example`.
+- **Free Gemini Quota**: Google Gemini free-tier keys permit 20 requests per day per model. The LLM router automatically skips models that return HTTP 429 until their reset time.
+- **Restart After Changing `.env`**: Environment variables are loaded into memory on process startup. Whenever you edit `.env`, restart Uvicorn to apply changes.
+
+## 13. Troubleshooting
+
+| Problem | Cause | Fix |
+| :--- | :--- | :--- |
+| Jira API returns HTTP 410 Gone | The older Jira search endpoint or session authentication has been removed by Atlassian | Verify that `JIRA_BASE_URL` uses HTTPS and your API token has valid Jira Cloud scopes. TeamPulse uses modern REST API v3 search endpoints. |
+| Briefing shows placeholder repository names | Windows system environment variables or `.env` still contain `owner/repo1,owner/repo2` | Open `.env` and replace `GITHUB_REPOS` with your actual repositories (e.g. `GITHUB_REPOS=myorg/myrepo`). If set in system environment variables, update them and reopen your terminal. |
+| Slack posts fail with `not_in_channel` error | The Slack bot is not a member of the channel specified in `SLACK_CHANNEL_ID` | In Slack, open the target channel and run `/invite @TeamPulse` (or your bot's name) to add the bot to the channel. |
+| Server fails to start with port 8000 in use (`[Errno 10048]`) | A previous Uvicorn or Python process is still running in the background | Find and terminate the process. On Windows PowerShell: `Get-Process python \| Stop-Process -Force` or use `taskkill /PID <pid> /F`. |
+| Database errors on startup (e.g. missing column or table) | Database schema changed between versions | Run `python scripts/reset_db.py --yes` to drop and recreate the development tables cleanly. |
+| LLM calls return HTTP 429 Resource Exhausted | Google Gemini free-tier daily or per-minute rate limit reached | TeamPulse router tracks quota resets and automatically skips blocked models. You can enable Ollama (`OLLAMA_ENABLED=true`), wait for the quota window to reset, or check status via `GET /llm/status`. |
+
+## 14. Known Limits and What Is Not Done Yet
+
+- **No Cloud Deployment**: TeamPulse currently runs locally on your machine or server. Deployment scripts and container manifests for Google Cloud Run or Docker are not yet created.
+- **Single Approver Group**: The current approval system verifies whether a user is in `SLACK_APPROVER_IDS`, but does not support multi-step hierarchical approvals.
+- **Single Workspace DB Partitioning**: Database tables include `workspace_id`, but automated multi-tenant credential isolation per workspace is not yet implemented.
