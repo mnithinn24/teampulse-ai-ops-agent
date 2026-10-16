@@ -1,7 +1,7 @@
 """Pydantic v2 schemas for LLM structured output and intent routing."""
 
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 UrgencyLevel = Literal["watch", "urgent", "critical"]
 ItemSource = Literal["github", "jira", "github_pr", "jira_issue"]
@@ -60,6 +60,27 @@ class Analysis(BaseModel):
     )
 
 
+class QueryFilters(BaseModel):
+    """Filters applicable to work items."""
+
+    source: Optional[str] = Field(
+        default=None,
+        description="Data source filter: github | jira | None",
+    )
+    author: Optional[str] = Field(
+        default=None,
+        description="Filter by author or assignee login",
+    )
+    status: Optional[str] = Field(
+        default=None,
+        description="Filter by status (e.g. Open, In Progress, Blocked)",
+    )
+    stale_only: Optional[bool] = Field(
+        default=None,
+        description="Whether to only include stale work items",
+    )
+
+
 class QueryIntent(BaseModel):
     """Classification of an on-demand natural language query."""
 
@@ -75,14 +96,42 @@ class QueryIntent(BaseModel):
         default="status",
         description="Category of query (e.g. status, blockers, stale, velocity, lookup, out_of_scope)",
     )
-    operation: Optional[str] = Field(
-        default=None,
-        description="Operation type: out_of_scope, lookup, status, blockers, stale, velocity",
+    operation: str = Field(
+        default="summary",
+        description="Operation: rank | count | list | lookup | summary | out_of_scope",
+    )
+    metric: str = Field(
+        default="none",
+        description="Metric: age_days | days_since_update | comment_count | none",
+    )
+    order: str = Field(
+        default="desc",
+        description="Sort order: asc | desc",
+    )
+    limit: int = Field(
+        default=5,
+        description="Limit on results returned (default 5, max 10)",
+    )
+    filters: QueryFilters = Field(
+        default_factory=QueryFilters,
+        description="Filters on source, author, status, stale_only",
+    )
+    entity_ids: List[str] = Field(
+        default_factory=list,
+        description="Specific canonical work item IDs or keys",
     )
     time_range: str = Field(
         default="24h",
         description="Temporal window relevant to the query (e.g. 24h, 7d, current_sprint)",
     )
+
+    @field_validator("limit", mode="after")
+    @classmethod
+    def clamp_limit(cls, v: int) -> int:
+        if v < 1:
+            return 5
+        return min(v, 10)
+
 
 
 

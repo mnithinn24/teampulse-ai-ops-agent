@@ -173,6 +173,10 @@ class Settings(BaseSettings):
         default=5,
         description="Maximum natural language queries allowed per minute per Slack user",
     )
+    query_cache_ttl_seconds: int = Field(
+        default=300,
+        description="Cache TTL in seconds for collected work items per workspace in the query path",
+    )
 
     @field_validator("morning_briefing_time", "evening_briefing_time", mode="after")
     @classmethod

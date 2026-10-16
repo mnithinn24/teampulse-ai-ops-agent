@@ -19,23 +19,78 @@ from app.core.ids import (
 from app.integrations.github_client import GitHubClient, PullRequest
 from app.integrations.jira_client import JiraClient, JiraIssue
 from app.llm.router import LLMResult, LLMRouter
-from app.llm.schemas import QueryAnswerOutput, QueryIntent
+from app.llm.schemas import QueryAnswerOutput, QueryFilters, QueryIntent
 
 logger = logging.getLogger(__name__)
 
 
+class QueryDataCache:
+    """In-memory cache for workspace PRs and Jira issues with TTL."""
+
+    def __init__(self) -> None:
+        self._cache: Dict[str, Dict[str, Any]] = {}
+
+    def get(
+        self, workspace_id: str, ttl_seconds: float
+    ) -> Optional[Tuple[List[PullRequest], List[JiraIssue], List[str]]]:
+        entry = self._cache.get(workspace_id)
+        if not entry:
+            return None
+        elapsed = time.monotonic() - entry["timestamp"]
+        if elapsed < ttl_seconds:
+            return entry["prs"], entry["issues"], entry["sources_used"]
+        # Expired
+        self._cache.pop(workspace_id, None)
+        return None
+
+    def set(
+        self,
+        workspace_id: str,
+        prs: List[PullRequest],
+        issues: List[JiraIssue],
+        sources_used: List[str],
+    ) -> None:
+        self._cache[workspace_id] = {
+            "timestamp": time.monotonic(),
+            "prs": list(prs),
+            "issues": list(issues),
+            "sources_used": list(sources_used),
+        }
+
+    def clear(self, workspace_id: Optional[str] = None) -> None:
+        if workspace_id:
+            self._cache.pop(workspace_id, None)
+        else:
+            self._cache.clear()
+
+
+_query_cache = QueryDataCache()
+
+
+def clear_query_cache(workspace_id: Optional[str] = None) -> None:
+    """Utility to clear the in-memory query cache."""
+    _query_cache.clear(workspace_id)
+
+
 def is_out_of_scope_by_keywords(question: str) -> bool:
-    """Keyword rule: no mention of PR, pull request, ticket, issue, Jira, GitHub, stale, KAN or a repo name means out_of_scope."""
+    """Keyword rule: none of pr, pull request, ticket, issue, jira, github, stale, repo, KAN, open, review, assigned means out_of_scope."""
     q_lower = question.lower()
     settings = get_settings()
 
-    # Mention of PR / pull request
-    if re.search(r"\b(pr|prs|pull\s+requests?)\b", q_lower):
-        return False
-
-    # Mention of ticket, issue, Jira, GitHub, stale, KAN
-    if re.search(r"\b(tickets?|issues?|jira|github|stale|kan)\b", q_lower):
-        return False
+    keywords = [
+        r"\b(pr|prs|pull\s+requests?)\b",
+        r"\b(tickets?|issues?)\b",
+        r"\b(jira|github|stale)\b",
+        r"\b(repos?|repositories|repository)\b",
+        r"\bkan\b",
+        r"\bkan-\d+\b",
+        r"\b(open|opened)\b",
+        r"\b(reviews?|reviewers?|reviewing)\b",
+        r"\b(assigned|assignees?|unassigned)\b",
+    ]
+    for pattern in keywords:
+        if re.search(pattern, q_lower):
+            return False
 
     # Regex matches for Jira keys or PR references
     if JIRA_KEY_REGEX.search(question) or FULL_PR_REGEX.search(question) or PARTIAL_PR_REGEX.search(question):
@@ -94,13 +149,14 @@ def is_id_in_valid_data(target_id: str, valid_ids: Set[str]) -> bool:
 
 
 def classify_intent_with_rules(question: str) -> QueryIntent:
-    """Fallback keyword-based rule classifier for user query intent.
+    """Classify with keyword and regex rules first for simple questions.
 
-    Args:
-        question: The natural language question string.
-
-    Returns:
-        Structured QueryIntent with sources, entities, query_type, operation, and time_range.
+    Rules:
+    - none of: pr, pull request, ticket, issue, jira, github, stale, repo, KAN, open, review, assigned -> out_of_scope
+    - ID pattern (KAN-123, owner/repo#123) -> lookup
+    - oldest, longest, waiting, most stale -> rank
+    - how many, count, number of -> count
+    - otherwise -> summary / fallback
     """
     if is_out_of_scope_by_keywords(question):
         return QueryIntent(
@@ -112,48 +168,98 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
         )
 
     q_lower = question.lower()
-    sources: List[str] = []
 
-    # Check GitHub keywords
-    if any(k in q_lower for k in ["pr", "pull request", "github", "repo", "commit", "branch", "merge"]):
-        sources.append("github")
+    # Rule 1: ID pattern -> lookup
+    extracted_id = extract_lookup_id(question)
+    if extracted_id:
+        src = "github" if "#" in extracted_id else ("jira" if "-" in extracted_id else "all")
+        sources_needed = ["github"] if src == "github" else (["jira"] if src == "jira" else ["github", "jira"])
+        return QueryIntent(
+            operation="lookup",
+            query_type="lookup",
+            sources_needed=sources_needed,
+            entities=[extracted_id],
+            entity_ids=[extracted_id],
+            filters=QueryFilters(source=src if src != "all" else None),
+            time_range="24h",
+        )
 
-    # Check Jira keywords
-    if any(k in q_lower for k in ["jira", "ticket", "issue", "bug", "task", "story", "sprint", "kan"]):
-        sources.append("jira")
+    # Determine sources
+    has_gh = bool(re.search(r"\b(pr|prs|pull\s+requests?|github|repo)\b", q_lower))
+    has_jr = bool(re.search(r"\b(tickets?|issues?|jira|kan)\b", q_lower))
+    if has_gh and not has_jr:
+        src = "github"
+        sources_needed = ["github"]
+    elif has_jr and not has_gh:
+        src = "jira"
+        sources_needed = ["jira"]
+    else:
+        src = None
+        sources_needed = ["github", "jira"]
 
-    if not sources:
-        sources = ["github", "jira"]
+    stale_only = "stale" in q_lower
 
-    # Extract entity mentions
-    jira_keys = JIRA_KEY_REGEX.findall(question)
-    pr_matches = FULL_PR_REGEX.findall(question) + PARTIAL_PR_REGEX.findall(question)
-    entities = list(set(jira_keys + pr_matches))
+    # Rule 2: oldest, longest, waiting, most stale -> rank
+    rank_terms = ["oldest", "longest", "waiting", "most stale", "most inactive", "highest age", "slowest"]
+    if any(term in q_lower for term in rank_terms):
+        metric = "days_since_update" if "inactive" in q_lower else "age_days"
+        limit_match = re.search(r"\b(?:top|first)?\s*(\d+)\b", q_lower)
+        limit = 5
+        if limit_match:
+            try:
+                parsed_limit = int(limit_match.group(1))
+                if 1 <= parsed_limit <= 10:
+                    limit = parsed_limit
+            except ValueError:
+                pass
+        return QueryIntent(
+            operation="rank",
+            metric=metric,
+            order="desc",
+            limit=limit,
+            filters=QueryFilters(source=src, stale_only=stale_only),
+            sources_needed=sources_needed,
+            query_type="stale" if stale_only else "status",
+            time_range="24h",
+        )
 
-    # Determine query category & operation
-    operation = "status"
-    query_type = "status"
-    if jira_keys or pr_matches or any(k in q_lower for k in ["tell me about", "lookup", "look up", "find", "show me", "check"]):
-        operation = "lookup"
-        query_type = "lookup"
-    elif any(k in q_lower for k in ["block", "blocker", "stuck"]):
-        operation = "blockers"
-        query_type = "blockers"
-    elif any(k in q_lower for k in ["stale", "inactive", "old", "abandoned"]):
-        operation = "stale"
-        query_type = "stale"
-    elif any(k in q_lower for k in ["velocity", "speed", "throughput"]):
-        operation = "velocity"
-        query_type = "velocity"
-    elif any(k in q_lower for k in ["unassigned", "who is", "assignee", "owner"]):
-        operation = "unassigned"
-        query_type = "unassigned"
+    # Rule 3: how many, count, number of -> count
+    count_terms = ["how many", "count", "number of", "total number", "total count", "total of"]
+    if any(term in q_lower for term in count_terms):
+        return QueryIntent(
+            operation="count",
+            metric="none",
+            order="desc",
+            limit=5,
+            filters=QueryFilters(source=src, stale_only=stale_only),
+            sources_needed=sources_needed,
+            query_type="stale" if stale_only else "status",
+            time_range="24h",
+        )
 
+    # Rule 4: list / show / which
+    list_terms = ["list", "show all", "show me", "which"]
+    if any(term in q_lower for term in list_terms):
+        return QueryIntent(
+            operation="list",
+            metric="none",
+            order="desc",
+            limit=5,
+            filters=QueryFilters(source=src, stale_only=stale_only),
+            sources_needed=sources_needed,
+            query_type="stale" if stale_only else "status",
+            time_range="24h",
+        )
+
+    # Default fallback
     return QueryIntent(
-        sources_needed=sources,
-        entities=entities,
-        query_type=query_type,
-        operation=operation,
+        operation="summary",
+        metric="none",
+        order="desc",
+        limit=5,
+        filters=QueryFilters(source=src, stale_only=stale_only),
+        sources_needed=sources_needed,
+        query_type="status",
         time_range="24h",
     )
 
@@ -162,15 +268,12 @@ async def classify_query_intent(
     question: str,
     router: Optional[LLMRouter] = None,
 ) -> Tuple[QueryIntent, str]:
-    """Step 1: Classify question into QueryIntent using router's simple-task path or rule fallback.
+    """Step 1: Classify question using keyword/regex rules first. Only call LLM if rules cannot decide."""
+    rule_intent = classify_intent_with_rules(question)
+    if rule_intent.operation in ["out_of_scope", "lookup", "rank", "count", "list"]:
+        logger.info("Query classified by rules: operation=%s, sources=%s", rule_intent.operation, rule_intent.sources_needed)
+        return rule_intent, "rule_based_classifier"
 
-    Args:
-        question: The user's plain-language question.
-        router: Optional LLMRouter instance.
-
-    Returns:
-        Tuple of (classified QueryIntent, model_or_rule_used).
-    """
     settings = get_settings()
     llm_router = router or LLMRouter()
 
@@ -178,26 +281,29 @@ async def classify_query_intent(
         f"Classify the following software engineering operational question into structured intent:\n\n"
         f"Question: \"{question}\"\n\n"
         f"Identify:\n"
-        f"- operation: 'out_of_scope' if the question is not about the team's GitHub pull requests or Jira tickets (weather, general knowledge, jokes, personal topics); 'lookup' if asking about a specific item/ID; or 'status', 'blockers', 'stale', 'velocity'\n"
-        f"- sources_needed: list containing 'github', 'jira', or both (empty if out_of_scope)\n"
+        f"- operation: rank, count, list, lookup, summary, or out_of_scope\n"
+        f"- metric: age_days, days_since_update, comment_count, or none\n"
+        f"- order: asc or desc\n"
+        f"- limit: integer 1-10 (default 5)\n"
+        f"- sources_needed: list containing 'github', 'jira', or empty if out_of_scope\n"
         f"- entities: list of specific ticket IDs, repos, or usernames mentioned\n"
         f"- query_type: status, blockers, stale, velocity, unassigned, lookup, or out_of_scope\n"
         f"- time_range: 24h, 7d, or all\n"
     )
 
     try:
-        # Simple task path routes to Ollama if enabled/healthy, then Gemini fallback
-        result = await llm_router.route(prompt, schema=QueryIntent, task_type="intent")
+        call_coro = llm_router.route(prompt, schema=QueryIntent, task_type="intent")
+        result = await asyncio.wait_for(call_coro, timeout=15.0)
         intent_data = result.data
-        if intent_data.query_type == "out_of_scope" and not intent_data.operation:
+        if intent_data.query_type == "out_of_scope" and intent_data.operation != "out_of_scope":
             intent_data.operation = "out_of_scope"
         elif intent_data.operation == "out_of_scope" and intent_data.query_type != "out_of_scope":
             intent_data.query_type = "out_of_scope"
         logger.info("Query classified by model '%s': %s", result.model_name, intent_data)
         return intent_data, result.model_name
     except Exception as exc:
-        logger.warning("LLM intent classification failed (%s). Using rule-based classifier.", exc)
-        return classify_intent_with_rules(question), "rule_based_classifier"
+        logger.warning("LLM intent classification failed or timed out (%s). Using rule fallback.", exc)
+        return rule_intent, "rule_based_classifier"
 
 
 async def fetch_query_sources(
@@ -205,15 +311,10 @@ async def fetch_query_sources(
     github_client: Optional[GitHubClient] = None,
     jira_client: Optional[JiraClient] = None,
 ) -> Tuple[List[PullRequest], List[JiraIssue], List[str]]:
-    """Step 2: Fetch only the sources the intent needs, applying standard caps.
-
-    Args:
-        sources_needed: List of required sources ('github', 'jira').
-        github_client: Optional GitHubClient instance.
-        jira_client: Optional JiraClient instance.
+    """Step 2: Fetch only the sources the intent needs over the FULL collected data.
 
     Returns:
-        Tuple of (prs, issues, sources_used).
+        Tuple of (full_prs, full_issues, sources_used).
     """
     settings = get_settings()
     sources_normalized = [s.lower() for s in sources_needed]
@@ -254,14 +355,14 @@ async def fetch_query_sources(
             gh_res = results[idx]
             idx += 1
             if isinstance(gh_res, list):
-                prs = gh_res[: settings.max_items_in_prompt]
+                prs = gh_res  # FULL collected data, no prompt slicing
             else:
                 logger.warning("GitHub query fetch failed: %s", gh_res)
 
         if fetch_jr:
             jr_res = results[idx]
             if isinstance(jr_res, list):
-                issues = jr_res[: settings.max_items_in_prompt]
+                issues = jr_res  # FULL collected data, no prompt slicing
             else:
                 logger.warning("Jira query fetch failed: %s", jr_res)
 
@@ -273,15 +374,209 @@ async def fetch_query_sources(
     return prs, issues, sources_used
 
 
+def build_work_items(
+    prs: List[PullRequest],
+    tickets: List[JiraIssue],
+) -> List[Dict[str, Any]]:
+    """Build unified work item representation for Python ranking, counting, and filtering."""
+    items: List[Dict[str, Any]] = []
+    for pr in prs:
+        cid = canonical_id("github", identifier=pr.number, repo=pr.repo)
+        items.append({
+            "id": cid,
+            "title": pr.title,
+            "author": pr.author or "unknown",
+            "age_days": int(pr.age_days),
+            "days_since_update": int(pr.last_commit_days),
+            "comment_count": 0,
+            "is_stale": bool(pr.is_stale),
+            "source": "github",
+            "status": "open",
+        })
+    for t in tickets:
+        cid = canonical_id("jira", t.key)
+        items.append({
+            "id": cid,
+            "title": t.title,
+            "author": t.assignee or "Unassigned",
+            "age_days": int(t.age_days),
+            "days_since_update": int(t.days_since_update),
+            "comment_count": int(t.comment_count),
+            "is_stale": bool(t.is_stale),
+            "source": "jira",
+            "status": t.status,
+        })
+    return items
+
+
+def compute_query_results(
+    intent: QueryIntent,
+    items: List[Dict[str, Any]],
+    question: str,
+) -> Tuple[List[Dict[str, Any]], int, str]:
+    """Execute computation (rank, count, list, lookup) in Python over full collected data.
+
+    Returns:
+        Tuple of (computed_rows, total_count, template_answer).
+    """
+    filtered = list(items)
+
+    # 1. Filter by source
+    src = intent.filters.source
+    if not src and intent.sources_needed and len(intent.sources_needed) == 1:
+        src = intent.sources_needed[0].lower()
+
+    if src in ["github", "jira"]:
+        filtered = [it for it in filtered if it["source"] == src]
+
+    # 2. Filter by stale
+    if intent.filters.stale_only:
+        filtered = [it for it in filtered if it["is_stale"]]
+
+    # 3. Filter by author
+    if intent.filters.author:
+        auth_q = intent.filters.author.lower()
+        filtered = [it for it in filtered if auth_q in it["author"].lower()]
+
+    # 4. Filter by status
+    if intent.filters.status:
+        stat_q = intent.filters.status.lower()
+        filtered = [it for it in filtered if stat_q in it["status"].lower()]
+
+    total_count = len(filtered)
+
+    # Noun string
+    if src == "github":
+        noun = "stale pull requests" if intent.filters.stale_only else "open pull requests"
+        base_noun = "pull requests"
+    elif src == "jira":
+        noun = "stale Jira tickets" if intent.filters.stale_only else "open Jira tickets"
+        base_noun = "Jira tickets"
+    else:
+        noun = "stale work items" if intent.filters.stale_only else "open work items"
+        base_noun = "work items"
+
+    # Operation: COUNT
+    if intent.operation == "count":
+        template_answer = f"There are {total_count} {noun}."
+        return [], total_count, template_answer
+
+    # Operation: RANK
+    if intent.operation == "rank":
+        metric = intent.metric if intent.metric in ["age_days", "days_since_update", "comment_count"] else "age_days"
+        reverse = (intent.order == "desc")
+        filtered.sort(key=lambda x: x[metric], reverse=reverse)
+        limit = min(max(intent.limit, 1), 10)
+        computed_rows = filtered[:limit]
+
+        if metric == "age_days":
+            metric_phrase = "by days since opened"
+            unit = "days"
+        elif metric == "days_since_update":
+            metric_phrase = "by days since last update"
+            unit = "days inactive"
+        elif metric == "comment_count":
+            metric_phrase = "by comment count"
+            unit = "comments"
+        else:
+            metric_phrase = "by days since opened"
+            unit = "days"
+
+        if not computed_rows:
+            template_answer = f"No {base_noun} found to rank."
+        else:
+            lines = [f"Top {len(computed_rows)} {base_noun} ranked {metric_phrase} (total: {total_count}):"]
+            for i, r in enumerate(computed_rows, 1):
+                lines.append(f"{i}. {r['id']}: {r['title']} ({r[metric]} {unit}, author: {r['author']})")
+            template_answer = "\n".join(lines)
+        return computed_rows, total_count, template_answer
+
+    # Operation: LIST
+    if intent.operation == "list":
+        limit = min(max(intent.limit, 1), 10)
+        computed_rows = filtered[:limit]
+        if not computed_rows:
+            template_answer = f"No {base_noun} found."
+        else:
+            lines = [f"Found {total_count} {noun} (showing top {len(computed_rows)}):"]
+            for i, r in enumerate(computed_rows, 1):
+                lines.append(f"- {r['id']}: {r['title']} ({r['age_days']} days, author: {r['author']})")
+            template_answer = "\n".join(lines)
+        return computed_rows, total_count, template_answer
+
+    # Operation: LOOKUP
+    if intent.operation == "lookup":
+        target_id = extract_lookup_id(question, intent.entity_ids or intent.entities)
+        if not target_id:
+            return [], 0, "No target ID found in question."
+        matched = None
+        for it in items:
+            if it["id"] == target_id or it["id"].upper() == target_id.upper():
+                matched = it
+                break
+            if target_id.startswith("#") and it["id"].endswith(target_id):
+                matched = it
+                break
+        if not matched:
+            return [], 0, f"{target_id} is not in the collected data."
+        template_answer = f"{matched['id']}: {matched['title']} ({matched['age_days']} days, author: {matched['author']}, status: {matched['status']})."
+        return [matched], 1, template_answer
+
+    # Default / Summary
+    limit = min(max(intent.limit, 1), 10)
+    return filtered[:limit], total_count, ""
+
+
+def verify_rephrased_answer(
+    llm_answer: str,
+    computed_rows: List[Dict[str, Any]],
+    total_count: int,
+    operation: str,
+    metric: str,
+) -> bool:
+    """Verify that every number and ID in the LLM rephrased text exists in computed result."""
+    allowed_numbers = {total_count, len(computed_rows)}
+    for i in range(1, len(computed_rows) + 2):
+        allowed_numbers.add(i)
+
+    for r in computed_rows:
+        allowed_numbers.add(r["age_days"])
+        allowed_numbers.add(r["days_since_update"])
+        allowed_numbers.add(r["comment_count"])
+        num_match = re.search(r"#(\d+)", r["id"])
+        if num_match:
+            allowed_numbers.add(int(num_match.group(1)))
+        jira_num_match = re.search(r"-(\d+)", r["id"])
+        if jira_num_match:
+            allowed_numbers.add(int(jira_num_match.group(1)))
+
+    raw_numbers = re.findall(r"\b\d+\b", llm_answer)
+    for num_str in raw_numbers:
+        val = int(num_str)
+        if val not in allowed_numbers:
+            logger.warning("Verification failed: number %d not in allowed computed numbers %s", val, allowed_numbers)
+            return False
+
+    allowed_ids = {r["id"].lower() for r in computed_rows}
+    for match in JIRA_KEY_REGEX.finditer(llm_answer):
+        k = match.group(1).lower()
+        if not any(k in aid for aid in allowed_ids):
+            logger.warning("Verification failed: ungrounded Jira key in LLM answer: %s", match.group(1))
+            return False
+
+    if operation == "rank" and metric == "age_days":
+        if "days since opened" not in llm_answer.lower() and "days" not in llm_answer.lower():
+            logger.warning("Verification failed: metric not stated in LLM rank answer")
+            return False
+
+    return True
+
+
 def build_query_context(
     prs: List[PullRequest],
     tickets: List[JiraIssue],
 ) -> Tuple[str, Dict[str, Any], Set[str]]:
-    """Build formatted context string with exact canonical IDs and facts.
-
-    Returns:
-        Tuple of (context_string, items_map, set_of_valid_canonical_ids).
-    """
+    """Build formatted context string with exact canonical IDs and facts for LLM prompts."""
     valid_items: Dict[str, Any] = {}
     valid_ids: Set[str] = set()
     lines: List[str] = []
@@ -313,9 +608,6 @@ def build_query_context(
                 f"Stale: {t.is_stale}"
             )
 
-    if not lines:
-        return "No open items found in collected data.", {}, set()
-
     return "\n".join(lines), valid_items, valid_ids
 
 
@@ -324,16 +616,11 @@ def sanitize_and_ground_answer(
     valid_ids: Set[str],
     items_map: Dict[str, Any],
 ) -> Tuple[str, List[str]]:
-    """Enforce strict grounding: remove invented IDs and verify numbers against data.
-
-    Returns:
-        Tuple of (sanitized_answer, list_of_valid_mentioned_ids).
-    """
+    """Enforce strict grounding on query answers: remove invented IDs."""
     answer = raw_answer.strip()
     invented_ids_found: Set[str] = set()
     valid_ids_found: Set[str] = set()
 
-    # Look for Jira keys (e.g. KAN-42, PROJ-99)
     for match in JIRA_KEY_REGEX.finditer(answer):
         found_key = match.group(0).strip()
         canon = normalize_llm_id(found_key, valid_ids)
@@ -342,7 +629,6 @@ def sanitize_and_ground_answer(
         else:
             invented_ids_found.add(found_key)
 
-    # Look for GitHub PRs (e.g. owner/repo#12, #42)
     for match in list(FULL_PR_REGEX.finditer(answer)) + list(PARTIAL_PR_REGEX.finditer(answer)):
         found_pr = match.group(0).strip()
         canon = normalize_llm_id(found_pr, valid_ids)
@@ -351,20 +637,15 @@ def sanitize_and_ground_answer(
         else:
             invented_ids_found.add(found_pr)
 
-    # Remove invented IDs from answer text
     for inv_id in invented_ids_found:
         logger.warning("Removing invented item ID from query answer: %s", inv_id)
-        # Strip exact word match of invented ID
         answer = re.sub(rf"\b{re.escape(inv_id)}\b", "", answer)
 
-    # Clean up leftover artifacts from removed IDs
     answer = re.sub(r"\s+", " ", answer).strip(" ,;:-")
 
-    # If the answer has become meaningless or only referenced invented entities
     if not answer or (invented_ids_found and not valid_ids_found and len(answer) < 30):
         return "The requested information is not in the collected data.", []
 
-    # If the answer already explicitly says not in data
     if "not in the" in answer.lower() or "not found" in answer.lower():
         return answer, list(valid_ids_found)
 
@@ -380,22 +661,16 @@ async def handle_plain_language_query(
 ) -> Dict[str, Any]:
     """Execute end-to-end plain-language query workflow.
 
-    Workflow:
-    1. Classify intent (simple-task path: Ollama -> Gemini fallback -> rules).
-    2. Fetch required sources with caps.
-    3. Generate grounded answer via long-context path (Gemini main -> fallback -> Ollama).
-    4. Remove invented IDs and enforce grounding facts.
-
-    Returns:
-        Dict containing answer, sources_used, item_ids, model_used, and latency_ms.
+    Computation runs in Python over the FULL collected data.
     """
     t_start = time.perf_counter()
     llm_router = router or LLMRouter()
+    settings = get_settings()
 
-    # Step 1: Intent Classification
+    # Step 1: Intent Classification (Rules first)
     intent, classifier_model = await classify_query_intent(question, router=llm_router)
 
-    # Fast return for out-of-scope questions: do not fetch any data and do not call large model
+    # Fast return for out-of-scope questions: no data fetch, no LLM call
     if intent.operation == "out_of_scope" or intent.query_type == "out_of_scope":
         latency_ms = (time.perf_counter() - t_start) * 1000
         return {
@@ -404,19 +679,27 @@ async def handle_plain_language_query(
             "item_ids": [],
             "model_used": classifier_model,
             "latency_ms": round(latency_ms, 2),
+            "data": [],
+            "total_count": 0,
         }
 
-    # Step 2: Source Collection
-    prs, tickets, sources_used = await fetch_query_sources(
-        sources_needed=intent.sources_needed,
-        github_client=github_client,
-        jira_client=jira_client,
-    )
+    # Step 2: Source Collection with workspace cache
+    cached_data = _query_cache.get(workspace_id, float(settings.query_cache_ttl_seconds))
+    if cached_data is not None:
+        prs, tickets, sources_used = cached_data
+    else:
+        prs, tickets, sources_used = await fetch_query_sources(
+            sources_needed=intent.sources_needed,
+            github_client=github_client,
+            jira_client=jira_client,
+        )
+        _query_cache.set(workspace_id, prs, tickets, sources_used)
 
-    context_str, items_map, valid_ids = build_query_context(prs, tickets)
+    all_items = build_work_items(prs, tickets)
+    valid_ids = {it["id"] for it in all_items}
 
-    # Check for lookup of an ID not in the collected data: build answer in code, no LLM call, item_ids = []
-    target_id = extract_lookup_id(question, intent.entities)
+    # Check for missing target ID in lookup: build answer in code, no LLM call
+    target_id = extract_lookup_id(question, intent.entity_ids or intent.entities)
     if target_id and not is_id_in_valid_data(target_id, valid_ids):
         latency_ms = (time.perf_counter() - t_start) * 1000
         return {
@@ -425,9 +708,10 @@ async def handle_plain_language_query(
             "item_ids": [],
             "model_used": "rule_based",
             "latency_ms": round(latency_ms, 2),
+            "data": [],
+            "total_count": 0,
         }
 
-    # If no data exists at all
     if not valid_ids:
         latency_ms = (time.perf_counter() - t_start) * 1000
         return {
@@ -436,9 +720,77 @@ async def handle_plain_language_query(
             "item_ids": [],
             "model_used": classifier_model,
             "latency_ms": round(latency_ms, 2),
+            "data": [],
+            "total_count": 0,
         }
 
-    # Step 3: Answering with long-context path
+    # Step 3: Python computation over FULL data for rank, count, list, lookup
+    if intent.operation in ["rank", "count", "list", "lookup"]:
+        computed_rows, total_count, template_answer = compute_query_results(
+            intent=intent,
+            items=all_items,
+            question=question,
+        )
+
+        final_answer = template_answer
+        model_used = "template_code"
+
+        # LLM rephrasing is optional; verify all numbers and IDs against computed result
+        if template_answer and "not in the collected data" not in template_answer:
+            try:
+                candidates = await llm_router.get_candidates(task_type="analysis")
+                if candidates:
+                    provider, candidate_model = candidates[0]
+                    rephrase_prompt = (
+                        f"You are TeamPulse, an AI operations agent. Rephrase the following factual answer cleanly and concisely.\n"
+                        f"You MUST NOT change or invent any numbers or item IDs. State the metric ('by days since opened').\n\n"
+                        f"Original Answer:\n{template_answer}\n"
+                    )
+                    call_coro = llm_router.call_candidate(
+                        provider=provider,
+                        model_name=candidate_model,
+                        prompt=f"{rephrase_prompt}\nReturn JSON with schema: {{\"answer\": \"string\"}}.",
+                        schema=QueryAnswerOutput,
+                        task_type="analysis",
+                    )
+                    # 15 second timeout per LLM call in query path with low thinking level
+                    result = await asyncio.wait_for(call_coro, timeout=15.0)
+                    llm_text = result.data.answer.strip()
+                    if verify_rephrased_answer(llm_text, computed_rows, total_count, intent.operation, intent.metric):
+                        final_answer = llm_text
+                        model_used = result.model_name
+                    else:
+                        logger.info("LLM answer failed verification; reverting to template answer.")
+                        final_answer = template_answer
+                        model_used = "template_verified"
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.warning("LLM rephrase failed or timed out (%s). Using template answer.", exc)
+                final_answer = template_answer
+                model_used = "template_fallback"
+
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        return {
+            "answer": final_answer,
+            "sources_used": sources_used,
+            "item_ids": [r["id"] for r in computed_rows],
+            "model_used": model_used,
+            "latency_ms": round(latency_ms, 2),
+            "data": [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "age_days": r["age_days"],
+                    "author": r["author"],
+                }
+                for r in computed_rows
+            ],
+            "total_count": total_count,
+        }
+
+    # Step 4: Summary / General query (Long-context analysis path capped at prompt max)
+    context_str, items_map, _ = build_query_context(
+        prs[: settings.max_items_in_prompt], tickets[: settings.max_items_in_prompt]
+    )
     prompt = (
         f"You are TeamPulse, an AI operations agent. Answer the following question based ONLY on the collected data.\n\n"
         f"Question: \"{question}\"\n\n"
@@ -450,34 +802,32 @@ async def handle_plain_language_query(
         f"4. If the data does not contain the answer, say: 'The requested information is not in the collected data.'\n"
         f"Be concise, direct, and professional."
     )
-
     model_used = "rule_based"
     raw_answer = ""
-
     candidates = await llm_router.get_candidates(task_type="analysis")
     for provider, candidate_model in candidates:
         try:
             logger.info("Attempting query answer with %s (%s)", provider, candidate_model)
-            result = await llm_router.call_candidate(
+            call_coro = llm_router.call_candidate(
                 provider=provider,
                 model_name=candidate_model,
                 prompt=f"{prompt}\nReturn JSON with schema: {{\"answer\": \"string\"}}.",
                 schema=QueryAnswerOutput,
                 task_type="analysis",
             )
+            result = await asyncio.wait_for(call_coro, timeout=15.0)
             raw_answer = result.data.answer
             model_used = result.model_name
             break
-        except Exception as exc:
-            logger.warning("Candidate %s failed for query: %s", candidate_model, exc)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Candidate %s failed or timed out for query: %s", candidate_model, exc)
             continue
 
     if not raw_answer:
-        # Check if question matched any entities directly in rules
         matched_items = [
-            f"{cid}: {item.title}"
-            for cid, item in items_map.items()
-            if any(term in str(item).lower() for term in question.lower().split() if len(term) > 3)
+            f"{cid}: {it['title']}"
+            for cid, it in ((it["id"], it) for it in all_items)
+            if any(term in str(it).lower() for term in question.lower().split() if len(term) > 3)
         ]
         if matched_items:
             raw_answer = "Found matching items: " + "; ".join(matched_items[:3])
@@ -485,14 +835,26 @@ async def handle_plain_language_query(
             raw_answer = "The requested information is not in the collected data."
         model_used = "rule_based_fallback"
 
-    # Step 4: Sanitize & ground answer
-    clean_answer, valid_mentioned_ids = sanitize_and_ground_answer(raw_answer, valid_ids, items_map)
+    clean_answer, valid_mentioned_ids = sanitize_and_ground_answer(
+        raw_answer, valid_ids, {it["id"]: it for it in all_items}
+    )
     latency_ms = (time.perf_counter() - t_start) * 1000
 
+    top_computed = all_items[:10]
     return {
         "answer": clean_answer,
         "sources_used": sources_used,
         "item_ids": valid_mentioned_ids,
         "model_used": model_used,
         "latency_ms": round(latency_ms, 2),
+        "data": [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "age_days": r["age_days"],
+                "author": r["author"],
+            }
+            for r in top_computed
+        ],
+        "total_count": len(all_items),
     }

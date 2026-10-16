@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy import select
 
 from app.agents.query import (
+    _query_cache,
+    clear_query_cache,
     classify_intent_with_rules,
     handle_plain_language_query,
     sanitize_and_ground_answer,
@@ -51,6 +53,14 @@ from app.scheduler.jobs import (
 )
 from scripts.show_metrics import calculate_metrics_summary, compute_percentile
 from tests.test_slack_interaction import generate_slack_headers
+
+
+@pytest.fixture(autouse=True)
+def _clean_query_cache():
+    """Ensure query cache is empty before and after each test."""
+    clear_query_cache()
+    yield
+    clear_query_cache()
 
 
 # -----------------------------------------------------------------------------
@@ -292,7 +302,7 @@ async def test_query_question_not_in_data_returns_honest_message() -> None:
     mock_gh.fetch_all_open_prs.return_value = []
 
     res = await handle_plain_language_query(
-        question="Who deployed to staging yesterday?",
+        question="Which PR was deployed to staging yesterday?",
         github_client=mock_gh,
         router=mock_router,
     )
@@ -598,4 +608,343 @@ async def test_lookup_missing_pr_id_builds_code_answer_no_llm_call() -> None:
     # Assert no LLM call for answering
     mock_router.get_candidates.assert_not_called()
     mock_router.call_candidate.assert_not_called()
+
+
+# -----------------------------------------------------------------------------
+# 6. Real-run Fixture Tests (88 PRs aged 20-3300 days & 3 Jira issues)
+# -----------------------------------------------------------------------------
+@pytest.fixture
+def real_data_fixture() -> Tuple[List[PullRequest], List[JiraIssue]]:
+    """Fixture with 88 PRs aged between 20 and 3300 days and 3 Jira issues."""
+    prs = []
+    # Generate 88 PRs with ages from 3300 down to 20
+    for i in range(1, 89):
+        age = int(3300 - (i - 1) * (3300 - 20) / 87)
+        prs.append(
+            PullRequest(
+                id=i,
+                number=i,
+                title=f"Feature optimization {i}",
+                author=f"engineer_{i % 5}",
+                age_days=age,
+                last_commit_days=min(age, 10 + (i % 7)),
+                is_stale=True,  # All 88 PRs >= 20 days old are stale (> 7 days)
+                repo="myorg/repo",
+            )
+        )
+
+    issues = [
+        JiraIssue(
+            key="KAN-1",
+            title="Database performance issue",
+            assignee="alice",
+            age_days=15,
+            days_since_update=2,
+            is_stale=True,
+            status="In Progress",
+            comment_count=4,
+        ),
+        JiraIssue(
+            key="KAN-2",
+            title="Update landing page copy",
+            assignee="bob",
+            age_days=8,
+            days_since_update=1,
+            is_stale=False,
+            status="Open",
+            comment_count=1,
+        ),
+        JiraIssue(
+            key="KAN-3",
+            title="Setup GCP alert metrics",
+            assignee="carol",
+            age_days=25,
+            days_since_update=15,
+            is_stale=True,
+            status="Blocked",
+            comment_count=7,
+        ),
+    ]
+    return prs, issues
+
+
+@pytest.mark.asyncio
+async def test_oldest_prs_returns_3300_day_first_not_newest_15(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """Oldest PRs query returns the 3300-day and next oldest ones first (not the newest 15)."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = issues
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = []
+
+    res = await handle_plain_language_query(
+        question="Which pull requests have been waiting the longest?",
+        workspace_id="test_oldest_ws",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    # Must rank over full 88 PRs
+    assert res["total_count"] == 88
+    assert len(res["data"]) == 5
+    # First item must be the 3300-day PR
+    assert res["data"][0]["age_days"] == 3300
+    assert res["data"][0]["id"] == "myorg/repo#1"
+    # Second item must be the next oldest (around 3262)
+    assert res["data"][1]["age_days"] > 3200
+    assert res["data"][1]["age_days"] < 3300
+    # Answer text must state the metric
+    assert "by days since opened" in res["answer"].lower()
+    assert "3300 days" in res["answer"]
+
+
+@pytest.mark.asyncio
+async def test_stale_count_returns_fixture_total_above_15(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """Stale count returns exactly the fixture's stale total (88), which is above 15."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = []
+
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = issues
+
+    res = await handle_plain_language_query(
+        question="How many stale pull requests are there?",
+        workspace_id="test_count_ws",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    assert res["total_count"] == 88
+    assert "88" in res["answer"]
+    assert "15" not in res["answer"]
+
+
+@pytest.mark.asyncio
+async def test_count_answer_identical_when_max_items_in_prompt_15_or_100(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """Count answer is identical when MAX_ITEMS_IN_PROMPT is 15 or 100."""
+    prs, issues = real_data_fixture
+    settings = get_settings()
+    orig_max = settings.max_items_in_prompt
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = []
+
+    try:
+        # Run with max_items_in_prompt = 15
+        clear_query_cache()
+        settings.max_items_in_prompt = 15
+        mock_gh1 = AsyncMock()
+        mock_gh1.fetch_all_open_prs.return_value = prs
+        res1 = await handle_plain_language_query(
+            question="How many stale pull requests are there?",
+            workspace_id="test_ws_15",
+            github_client=mock_gh1,
+            router=mock_router,
+        )
+
+        # Run with max_items_in_prompt = 100
+        clear_query_cache()
+        settings.max_items_in_prompt = 100
+        mock_gh2 = AsyncMock()
+        mock_gh2.fetch_all_open_prs.return_value = prs
+        res2 = await handle_plain_language_query(
+            question="How many stale pull requests are there?",
+            workspace_id="test_ws_100",
+            github_client=mock_gh2,
+            router=mock_router,
+        )
+
+        assert res1["total_count"] == 88
+        assert res2["total_count"] == 88
+        assert res1["answer"] == res2["answer"]
+    finally:
+        settings.max_items_in_prompt = orig_max
+
+
+@pytest.mark.asyncio
+async def test_kan42_returns_not_in_data_message_no_llm_call(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """KAN-42 returns the not-in-data message with no LLM call."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = issues
+
+    res = await handle_plain_language_query(
+        question="Tell me about ticket KAN-42",
+        workspace_id="test_kan42_ws",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    assert res["answer"] == "KAN-42 is not in the collected data."
+    assert res["item_ids"] == []
+    # Assert no LLM call was made
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_triggers_no_data_fetch_and_no_llm_call() -> None:
+    """Out-of-scope question triggers no data fetch and no LLM call."""
+    clear_query_cache()
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_gh = AsyncMock()
+    mock_jr = AsyncMock()
+
+    res = await handle_plain_language_query(
+        question="What is the weather in Paris?",
+        workspace_id="test_oos_ws",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    assert res["answer"] == "I can only answer questions about your GitHub pull requests and Jira tickets."
+    mock_gh.fetch_all_open_prs.assert_not_called()
+    mock_jr.fetch_open_issues.assert_not_called()
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_answer_with_wrong_number_is_replaced_by_template_answer(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """An LLM answer with a wrong number is replaced by the template answer."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = [("gemini", "gemini-2.5-flash")]
+    # LLM hallucinates wrong count 15 instead of real 88
+    mock_router.call_candidate.return_value = LLMResult(
+        data=QueryAnswerOutput(answer="There are 15 stale pull requests waiting for review."),
+        model_name="gemini-2.5-flash",
+        provider="gemini",
+        task_type="analysis",
+        latency_ms=100.0,
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = issues
+
+    res = await handle_plain_language_query(
+        question="How many stale pull requests are there?",
+        workspace_id="test_wrong_num_ws",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    # Verification must catch that 15 is not allowed and replace with template answer (88)
+    assert res["answer"] == "There are 88 stale pull requests."
+    assert "88" in res["answer"]
+    assert "15" not in res["answer"]
+
+
+@pytest.mark.asyncio
+async def test_query_cache_is_reused_within_ttl_and_refreshed_after_it(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """The cache is reused within the TTL and refreshed after it."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = []
+
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    ws = "ws_cache_expiry_test"
+
+    # 1. First call at t=0 fetches from client
+    res1 = await handle_plain_language_query(
+        question="How many stale pull requests are there?",
+        workspace_id=ws,
+        github_client=mock_gh,
+        router=mock_router,
+    )
+    assert res1["total_count"] == 88
+    assert mock_gh.fetch_all_open_prs.call_count == 1
+
+    # 2. Second call within TTL (300s) uses cached data
+    res2 = await handle_plain_language_query(
+        question="Which pull requests have been waiting the longest?",
+        workspace_id=ws,
+        github_client=mock_gh,
+        router=mock_router,
+    )
+    assert res2["total_count"] == 88
+    assert mock_gh.fetch_all_open_prs.call_count == 1  # Still 1, cache hit!
+
+    # 3. Simulate cache expiry: set timestamp 400s in the past
+    _query_cache._cache[ws]["timestamp"] -= 400.0
+
+    # 4. Third call after TTL refreshes cache
+    res3 = await handle_plain_language_query(
+        question="How many stale pull requests are there?",
+        workspace_id=ws,
+        github_client=mock_gh,
+        router=mock_router,
+    )
+    assert res3["total_count"] == 88
+    assert mock_gh.fetch_all_open_prs.call_count == 2  # Refreshed!
+
+
+@pytest.mark.asyncio
+async def test_llm_timeout_still_returns_template_answer(
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+) -> None:
+    """An LLM timeout still returns the template answer."""
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.get_candidates.return_value = [("gemini", "gemini-2.5-flash")]
+    # LLM call raises TimeoutError
+    mock_router.call_candidate.side_effect = asyncio.TimeoutError("LLM call timed out after 15s")
+
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+
+    res = await handle_plain_language_query(
+        question="Which pull requests have been waiting the longest?",
+        workspace_id="test_timeout_ws",
+        github_client=mock_gh,
+        router=mock_router,
+    )
+
+    # Must return template answer despite timeout
+    assert "Top 5 pull requests ranked by days since opened" in res["answer"]
+    assert "3300 days" in res["answer"]
+    assert res["total_count"] == 88
+    assert len(res["data"]) == 5
+
 
