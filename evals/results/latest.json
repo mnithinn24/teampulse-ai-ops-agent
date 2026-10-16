@@ -1,87 +1,87 @@
 {
-  "timestamp": "2026-10-16T10:14:55Z",
-  "git_commit": "2b300f83abfff31e2c0a2e8cf0a9de064e9f02b8",
+  "timestamp": "2026-10-16T11:56:56Z",
+  "git_commit": "f4dadb8ae6b0b343d18909a9556f0a8f006c3fef",
   "python_version": "3.14.6",
   "deterministic_eval": {
     "total_cases": 48,
-    "passed_cases": 46,
-    "failed_cases": 2,
-    "overall_accuracy": 0.9583,
-    "p50_latency_ms": 0.93,
-    "p95_latency_ms": 38.68,
-    "mean_latency_ms": 17.22,
+    "passed_cases": 48,
+    "failed_cases": 0,
+    "overall_accuracy": 1.0,
+    "p50_latency_ms": 0.55,
+    "p95_latency_ms": 40.13,
+    "mean_latency_ms": 15.45,
     "category_metrics": {
       "action_safety": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 5.49,
-        "p50_ms": 0.73,
-        "p95_ms": 20.33
+        "mean_ms": 3.7,
+        "p50_ms": 0.45,
+        "p95_ms": 13.83
       },
       "briefing_wording": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 0.15,
-        "p50_ms": 0.08,
-        "p95_ms": 0.29
+        "mean_ms": 0.09,
+        "p50_ms": 0.03,
+        "p95_ms": 0.21
       },
       "failure_handling": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 0.63,
-        "p50_ms": 0.34,
-        "p95_ms": 1.61
+        "mean_ms": 0.49,
+        "p50_ms": 0.28,
+        "p95_ms": 1.26
       },
       "grounding": {
         "total": 6,
         "passed": 6,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 0.08,
-        "p50_ms": 0.07,
-        "p95_ms": 0.12
+        "mean_ms": 0.06,
+        "p50_ms": 0.05,
+        "p95_ms": 0.1
       },
       "query_count": {
         "total": 6,
-        "passed": 4,
-        "failed": 2,
-        "accuracy": 0.6667,
-        "mean_ms": 35.36,
-        "p50_ms": 35.13,
-        "p95_ms": 36.7
+        "passed": 6,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 29.02,
+        "p50_ms": 29.05,
+        "p95_ms": 30.54
       },
       "query_lookup": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 34.85,
-        "p50_ms": 34.79,
-        "p95_ms": 36.5
+        "mean_ms": 31.54,
+        "p50_ms": 28.18,
+        "p95_ms": 42.08
       },
       "query_out_of_scope": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 35.22,
-        "p50_ms": 34.5,
-        "p95_ms": 37.64
+        "mean_ms": 32.42,
+        "p50_ms": 28.79,
+        "p95_ms": 40.37
       },
       "query_rank": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 46.44,
-        "p50_ms": 38.86,
-        "p95_ms": 75.95
+        "mean_ms": 45.15,
+        "p50_ms": 32.23,
+        "p95_ms": 83.25
       },
       "stale_detection": {
         "total": 6,
@@ -103,7 +103,7 @@
         "id": "QR-01",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 84.9,
+        "latency_ms": 94.48,
         "expected": {
           "top_number": 88,
           "top_age": 3300,
@@ -120,7 +120,7 @@
         "id": "QR-02",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 38.86,
+        "latency_ms": 38.33,
         "expected": {
           "contains": [
             "#88",
@@ -137,7 +137,7 @@
         "id": "QR-03",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 40.15,
+        "latency_ms": 32.23,
         "expected": {
           "contains": [
             "#88",
@@ -156,7 +156,7 @@
         "id": "QR-04",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 35.71,
+        "latency_ms": 30.6,
         "expected": {
           "contains": [
             "#88"
@@ -171,7 +171,7 @@
         "id": "QR-05",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 32.6,
+        "latency_ms": 30.09,
         "expected": {
           "contains": [
             "#88",
@@ -186,7 +186,7 @@
         "id": "QC-01",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 36.59,
+        "latency_ms": 30.87,
         "expected": {
           "count": 88,
           "contains": [
@@ -201,7 +201,7 @@
         "id": "QC-02",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 35.08,
+        "latency_ms": 28.89,
         "expected": {
           "count": 88,
           "contains": [
@@ -215,30 +215,30 @@
       {
         "id": "QC-03",
         "category": "query_count",
-        "passed": false,
-        "latency_ms": 36.73,
+        "passed": true,
+        "latency_ms": 29.21,
         "expected": {
           "count": 15,
           "contains": [
             "15"
           ]
         },
-        "actual": "There are 88 open pull requests.",
+        "actual": "There are 15 open pull requests.",
         "guards_against": "Author filtering failed or missed items outside the first page/prompt slice.",
         "error": null
       },
       {
         "id": "QC-04",
         "category": "query_count",
-        "passed": false,
-        "latency_ms": 34.62,
+        "passed": true,
+        "latency_ms": 28.05,
         "expected": {
           "count": 15,
           "contains": [
             "15"
           ]
         },
-        "actual": "There are 88 open pull requests.",
+        "actual": "There are 15 open pull requests.",
         "guards_against": "Author name matching was case-sensitive or truncated.",
         "error": null
       },
@@ -246,7 +246,7 @@
         "id": "QC-05",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 33.98,
+        "latency_ms": 27.58,
         "expected": {
           "count": 3,
           "contains": [
@@ -261,7 +261,7 @@
         "id": "QC-06",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 35.18,
+        "latency_ms": 29.55,
         "expected": {
           "count": 0,
           "contains": [
@@ -276,7 +276,7 @@
         "id": "QL-01",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 33.11,
+        "latency_ms": 27.83,
         "expected": {
           "found": true,
           "contains": [
@@ -292,7 +292,7 @@
         "id": "QL-02",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 34.96,
+        "latency_ms": 27.89,
         "expected": {
           "found": true,
           "contains": [
@@ -308,7 +308,7 @@
         "id": "QL-03",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 34.79,
+        "latency_ms": 28.18,
         "expected": {
           "found": true,
           "contains": [
@@ -324,7 +324,7 @@
         "id": "QL-04",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 36.89,
+        "latency_ms": 28.27,
         "expected": {
           "found": false,
           "contains": [
@@ -339,7 +339,7 @@
         "id": "QL-05",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 34.51,
+        "latency_ms": 45.53,
         "expected": {
           "found": false,
           "contains": [
@@ -354,7 +354,7 @@
         "id": "QO-01",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 34.04,
+        "latency_ms": 28.79,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -366,7 +366,7 @@
         "id": "QO-02",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 34.5,
+        "latency_ms": 26.58,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -378,7 +378,7 @@
         "id": "QO-03",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 34.38,
+        "latency_ms": 40.7,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -390,7 +390,7 @@
         "id": "QO-04",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 34.83,
+        "latency_ms": 39.07,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -402,7 +402,7 @@
         "id": "QO-05",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 38.34,
+        "latency_ms": 26.98,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -498,7 +498,7 @@
         "id": "GR-01",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.1,
+        "latency_ms": 0.08,
         "expected": {
           "blocked": true,
           "survives_grounding": false
@@ -514,7 +514,7 @@
         "id": "GR-02",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.05,
+        "latency_ms": 0.04,
         "expected": {
           "blocked": true,
           "survives_grounding": false
@@ -530,7 +530,7 @@
         "id": "GR-03",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.13,
+        "latency_ms": 0.1,
         "expected": {
           "blocked": false,
           "survives_grounding": true,
@@ -551,7 +551,7 @@
         "id": "GR-04",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.07,
+        "latency_ms": 0.05,
         "expected": {
           "blocked": false,
           "reason_replaced_by_code": true,
@@ -574,7 +574,7 @@
         "id": "GR-05",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.06,
+        "latency_ms": 0.05,
         "expected": {
           "normalized_id": "mnithinn24/teampulse-ai-ops-agent#88",
           "survives_grounding": true
@@ -593,7 +593,7 @@
         "id": "GR-06",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.06,
+        "latency_ms": 0.05,
         "expected": {
           "normalized_id": "KAN-1",
           "survives_grounding": true
@@ -612,7 +612,7 @@
         "id": "FH-01",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 1.9,
+        "latency_ms": 1.49,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": "WARNING: GitHub data unavailable",
@@ -627,7 +627,7 @@
         "id": "FH-02",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.34,
+        "latency_ms": 0.28,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": "WARNING: Jira data unavailable",
@@ -642,7 +642,7 @@
         "id": "FH-03",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.47,
+        "latency_ms": 0.34,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": [
@@ -659,7 +659,7 @@
         "id": "FH-04",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.21,
+        "latency_ms": 0.15,
         "expected": {
           "warning_contains": "reset at 15:30 IST",
           "no_all_clear": true
@@ -672,7 +672,7 @@
         "id": "FH-05",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.25,
+        "latency_ms": 0.17,
         "expected": {
           "warning_contains": "HTTP 403 Forbidden",
           "forbidden_in_warning": [
@@ -688,7 +688,7 @@
         "id": "BW-01",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.28,
+        "latency_ms": 0.15,
         "expected": {
           "shows_priority_headers": true,
           "no_all_clear": true
@@ -701,7 +701,7 @@
         "id": "BW-02",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.08,
+        "latency_ms": 0.03,
         "expected": {
           "exact_sentence": "No new items since the last briefing. 3 PRs and 2 tickets are still stale.",
           "no_all_clear": true
@@ -714,7 +714,7 @@
         "id": "BW-03",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.03,
+        "latency_ms": 0.01,
         "expected": {
           "contains_all_clear": true
         },
@@ -726,7 +726,7 @@
         "id": "BW-04",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.29,
+        "latency_ms": 0.22,
         "expected": {
           "no_all_clear": true,
           "starts_with_warning": true
@@ -739,7 +739,7 @@
         "id": "BW-05",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.06,
+        "latency_ms": 0.02,
         "expected": {
           "exact_sentence": "No new items since the last briefing. 1 PRs and 0 tickets are still stale.",
           "no_all_clear": true
@@ -752,7 +752,7 @@
         "id": "AS-01",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 25.13,
+        "latency_ms": 17.12,
         "expected": {
           "executed_calls": 1,
           "is_idempotent": true
@@ -768,7 +768,7 @@
         "id": "AS-02",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 1.14,
+        "latency_ms": 0.65,
         "expected": {
           "created_issue": false,
           "reply_text": "Already tracked as KAN-42",
@@ -782,7 +782,7 @@
         "id": "AS-03",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.03,
+        "latency_ms": 0.02,
         "expected": {
           "created_issue": false,
           "contains_dry_run_tag": true,
@@ -796,7 +796,7 @@
         "id": "AS-04",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.73,
+        "latency_ms": 0.45,
         "expected": {
           "is_valid": false
         },
@@ -810,7 +810,7 @@
         "id": "AS-05",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.4,
+        "latency_ms": 0.26,
         "expected": {
           "is_valid": false
         },
@@ -821,37 +821,37 @@
         "error": null
       }
     ],
-    "failed_details": [
-      {
-        "id": "QC-03",
-        "category": "query_count",
-        "guards_against": "Author filtering failed or missed items outside the first page/prompt slice.",
-        "expected": {
-          "count": 15,
-          "contains": [
-            "15"
-          ]
-        },
-        "actual": "There are 88 open pull requests.",
-        "latency_ms": 36.73
-      },
-      {
-        "id": "QC-04",
-        "category": "query_count",
-        "guards_against": "Author name matching was case-sensitive or truncated.",
-        "expected": {
-          "count": 15,
-          "contains": [
-            "15"
-          ]
-        },
-        "actual": "There are 88 open pull requests.",
-        "latency_ms": 34.62
-      }
-    ]
+    "failed_details": []
   },
   "llm_eval": {
-    "enabled": false
+    "enabled": true,
+    "quota_hit": false,
+    "total_calls_made": 2,
+    "max_llm_calls_allowed": 6,
+    "models": {
+      "gemini-2.5-flash": {
+        "calls_attempted": 1,
+        "valid_json_calls": 0,
+        "total_flags_evaluated": 0,
+        "invented_ids_before_grounding": 0,
+        "invented_ids_after_grounding": 0,
+        "all_flags_in_fixture": false,
+        "mean_latency_ms": 262.71,
+        "p95_latency_ms": 262.71,
+        "calls_skipped_quota_429": 0
+      },
+      "gemini-2.0-flash": {
+        "calls_attempted": 1,
+        "valid_json_calls": 0,
+        "total_flags_evaluated": 0,
+        "invented_ids_before_grounding": 0,
+        "invented_ids_after_grounding": 0,
+        "all_flags_in_fixture": false,
+        "mean_latency_ms": 136.73,
+        "p95_latency_ms": 136.73,
+        "calls_skipped_quota_429": 0
+      }
+    }
   },
   "limits": {
     "synthetic_fixtures": "88 pull requests (ages 20-3300 days) and 3 Jira tickets generated deterministically with fixed random seed (42).",

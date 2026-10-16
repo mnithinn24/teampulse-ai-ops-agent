@@ -143,7 +143,8 @@ def test_report_contains_no_number_not_in_latest_json() -> None:
             for m in re.findall(r"\b\d+(?:\.\d+)?\b", obj):
                 nums.add(m)
         elif isinstance(obj, dict):
-            for v in obj.values():
+            for k, v in obj.items():
+                nums.update(extract_numbers_from_obj(k))
                 nums.update(extract_numbers_from_obj(v))
         elif isinstance(obj, list):
             for item in obj:

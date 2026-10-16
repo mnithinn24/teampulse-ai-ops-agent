@@ -148,7 +148,32 @@ def is_id_in_valid_data(target_id: str, valid_ids: Set[str]) -> bool:
     return normalize_llm_id(target_id, valid_ids) is not None
 
 
-def classify_intent_with_rules(question: str) -> QueryIntent:
+NON_AUTHOR_WORDS = {
+    "inactivity", "activity", "age", "date", "status", "priority", "urgency",
+    "last", "commit", "update", "day", "days", "time", "week", "month",
+    "the", "a", "an", "all", "none", "each", "every", "default", "name",
+    "pull", "request", "requests", "pr", "prs", "ticket", "tickets", "issue", "issues",
+}
+
+
+def extract_author_pattern(question: str) -> Optional[str]:
+    """Check for patterns: 'by <name>', 'does <name> have', '<name>'s', 'assigned to <name>'."""
+    patterns = [
+        r"\bby\s+([A-Za-z0-9_\-]+)\b",
+        r"\bdoes\s+([A-Za-z0-9_\-]+)\s+have\b",
+        r"\b([A-Za-z0-9_\-]+)'s\b",
+        r"\bassigned\s+to\s+([A-Za-z0-9_\-]+)\b",
+    ]
+    for p in patterns:
+        m = re.search(p, question, re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            if candidate.lower() not in NON_AUTHOR_WORDS:
+                return candidate
+    return None
+
+
+def classify_intent_with_rules(question: str, known_authors: Optional[Set[str]] = None) -> QueryIntent:
     """Classify with keyword and regex rules first for simple questions.
 
     Rules:
@@ -199,6 +224,16 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
 
     stale_only = "stale" in q_lower
 
+    # Author candidate extraction
+    author_candidate = None
+    if known_authors:
+        for name in sorted(known_authors, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(name)}\b", question, re.IGNORECASE):
+                author_candidate = name
+                break
+    if not author_candidate:
+        author_candidate = extract_author_pattern(question)
+
     # Rule 2: oldest, longest, waiting, most stale, inactivity, rank -> rank
     rank_terms = [
         "oldest",
@@ -235,7 +270,7 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
             metric=metric,
             order="desc",
             limit=limit,
-            filters=QueryFilters(source=src, stale_only=stale_only),
+            filters=QueryFilters(source=src, stale_only=stale_only, author=author_candidate),
             sources_needed=sources_needed,
             query_type="stale" if stale_only else "status",
             time_range="24h",
@@ -249,7 +284,7 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
             metric="none",
             order="desc",
             limit=5,
-            filters=QueryFilters(source=src, stale_only=stale_only),
+            filters=QueryFilters(source=src, stale_only=stale_only, author=author_candidate),
             sources_needed=sources_needed,
             query_type="stale" if stale_only else "status",
             time_range="24h",
@@ -263,7 +298,7 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
             metric="none",
             order="desc",
             limit=5,
-            filters=QueryFilters(source=src, stale_only=stale_only),
+            filters=QueryFilters(source=src, stale_only=stale_only, author=author_candidate),
             sources_needed=sources_needed,
             query_type="stale" if stale_only else "status",
             time_range="24h",
@@ -275,7 +310,7 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
         metric="none",
         order="desc",
         limit=5,
-        filters=QueryFilters(source=src, stale_only=stale_only),
+        filters=QueryFilters(source=src, stale_only=stale_only, author=author_candidate),
         sources_needed=sources_needed,
         query_type="status",
         time_range="24h",
@@ -458,7 +493,7 @@ def compute_query_results(
     # 3. Filter by author
     if intent.filters.author:
         auth_q = intent.filters.author.lower()
-        filtered = [it for it in filtered if auth_q in it["author"].lower()]
+        filtered = [it for it in filtered if auth_q == it["author"].lower()]
 
     # 4. Filter by status
     if intent.filters.status:
@@ -719,6 +754,35 @@ async def handle_plain_language_query(
 
     all_items = build_work_items(prs, tickets)
     valid_ids = {it["id"] for it in all_items}
+
+    # Author resolution against collected data (PR authors and Jira assignees)
+    known_authors = {
+        it["author"].strip()
+        for it in all_items
+        if it.get("author") and it["author"].strip().lower() not in ("unknown", "unassigned")
+    }
+    known_authors_lower = {a.lower(): a for a in known_authors}
+
+    extracted_author = extract_author_pattern(question)
+    if extracted_author:
+        if extracted_author.lower() in known_authors_lower:
+            intent.filters.author = known_authors_lower[extracted_author.lower()]
+        else:
+            latency_ms = (time.perf_counter() - t_start) * 1000
+            return {
+                "answer": f"No pull requests found for {extracted_author}.",
+                "sources_used": sources_used,
+                "item_ids": [],
+                "model_used": "rule_based",
+                "latency_ms": round(latency_ms, 2),
+                "data": [],
+                "total_count": 0,
+            }
+    elif not intent.filters.author:
+        for name in sorted(known_authors, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(name)}\b", question, re.IGNORECASE):
+                intent.filters.author = name
+                break
 
     # Check for missing target ID in lookup: build answer in code, no LLM call
     target_id = extract_lookup_id(question, intent.entity_ids or intent.entities)

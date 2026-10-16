@@ -646,6 +646,71 @@ async def test_rank_keyword_rules_no_llm_call() -> None:
     mock_router.route.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_author_extraction_and_filtering() -> None:
+    """4 test cases:
+    1. alice gives 15
+    2. 'How many PRs does BOB have?' gives 15 (case-insensitive)
+    3. unknown author 'zed' gives 'No pull requests found for zed.'
+    4. question with no author still gives 88
+    """
+    from evals.fixtures import generate_88_pr_dataset, generate_3_jira_dataset
+    prs = generate_88_pr_dataset()
+    tickets = generate_3_jira_dataset()
+
+    clear_query_cache()
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = tickets
+    mock_router = AsyncMock(spec=LLMRouter)
+
+    # 1. alice gives 15
+    res_alice = await handle_plain_language_query(
+        question="How many pull requests by alice?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+        workspace_id="test-author-ws-1",
+    )
+    assert res_alice["total_count"] == 15
+    assert "15" in res_alice["answer"]
+
+    # 2. "How many PRs does BOB have?" gives 15 (case-insensitive)
+    res_bob = await handle_plain_language_query(
+        question="How many PRs does BOB have?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+        workspace_id="test-author-ws-2",
+    )
+    assert res_bob["total_count"] == 15
+    assert "15" in res_bob["answer"]
+
+    # 3. unknown author "zed" gives the "No pull requests found" message
+    res_zed = await handle_plain_language_query(
+        question="How many pull requests by zed?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+        workspace_id="test-author-ws-3",
+    )
+    assert res_zed["total_count"] == 0
+    assert "No pull requests found for zed." in res_zed["answer"]
+
+    # 4. question with no author still gives 88
+    res_no_author = await handle_plain_language_query(
+        question="How many open pull requests are there?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+        workspace_id="test-author-ws-4",
+    )
+    assert res_no_author["total_count"] == 88
+    assert "88" in res_no_author["answer"]
+
+
+
 
 # -----------------------------------------------------------------------------
 # 6. Real-run Fixture Tests (88 PRs aged 20-3300 days & 3 Jira issues)
