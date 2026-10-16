@@ -226,9 +226,13 @@ async def process_slack_interaction(
         try:
             exec_result = await execute_approved_action(flag, jira_client=jira_client)
             flag.result = exec_result
-            status_text = f":white_check_mark: *Approved by <@{user_id}>* — {exec_result}"
 
-            action_status = "dry_run" if is_dry_run else "executed"
+            if exec_result.startswith("Already tracked as"):
+                status_text = f":information_source: {exec_result}"
+                action_status = "skipped_duplicate"
+            else:
+                status_text = f":white_check_mark: *Approved by <@{user_id}>* — {exec_result}"
+                action_status = "dry_run" if is_dry_run else "executed"
             action_record = ActionTaken(
                 workspace_id=flag.workspace_id,
                 action_type=action_type,

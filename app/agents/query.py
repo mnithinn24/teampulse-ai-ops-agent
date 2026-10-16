@@ -302,7 +302,11 @@ async def classify_query_intent(
         logger.info("Query classified by model '%s': %s", result.model_name, intent_data)
         return intent_data, result.model_name
     except Exception as exc:
-        logger.warning("LLM intent classification failed or timed out (%s). Using rule fallback.", exc)
+        err_clean = str(exc).replace("\n", " ").replace("\r", " ").strip()
+        log_line = f"LLM intent classification failed or timed out: {err_clean}"
+        if len(log_line) > 200:
+            log_line = log_line[:197] + "..."
+        logger.warning(log_line)
         return rule_intent, "rule_based_classifier"
 
 
@@ -764,7 +768,13 @@ async def handle_plain_language_query(
                         final_answer = template_answer
                         model_used = "code"
             except (asyncio.TimeoutError, Exception) as exc:
-                logger.warning("LLM rephrase failed or timed out (%s). Using template answer.", exc)
+                err_clean = str(exc).replace("\n", " ").replace("\r", " ").strip()
+                err_clean = re.sub(r"'raw_text':\s*'.*?'", "'raw_text': '...'", err_clean)
+                err_clean = re.sub(r"'response_json':\s*\{.*?\}", "'response_json': {...}", err_clean)
+                log_line = f"LLM rephrase failed or timed out: {err_clean}"
+                if len(log_line) > 200:
+                    log_line = log_line[:197] + "..."
+                logger.warning(log_line)
                 final_answer = template_answer
                 model_used = "code"
 
@@ -821,7 +831,13 @@ async def handle_plain_language_query(
             model_used = result.model_name
             break
         except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning("Candidate %s failed or timed out for query: %s", candidate_model, exc)
+            err_clean = str(exc).replace("\n", " ").replace("\r", " ").strip()
+            err_clean = re.sub(r"'raw_text':\s*'.*?'", "'raw_text': '...'", err_clean)
+            err_clean = re.sub(r"'response_json':\s*\{.*?\}", "'response_json': {...}", err_clean)
+            log_line = f"Candidate {candidate_model} failed for query: {err_clean}"
+            if len(log_line) > 200:
+                log_line = log_line[:197] + "..."
+            logger.warning(log_line)
             continue
 
     if not raw_answer:

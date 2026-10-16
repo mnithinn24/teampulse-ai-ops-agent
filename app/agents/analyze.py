@@ -578,12 +578,19 @@ async def analyze_workspace(
                 model_name = result.model_name
                 latency_ms = result.latency_ms
             except Exception as reprompt_err:
-                logger.warning("Re-prompt failed: %s.", reprompt_err)
+                err_clean = str(reprompt_err).replace("\n", " ").replace("\r", " ").strip()
+                log_line = f"Re-prompt failed: {err_clean}"
+                if len(log_line) > 200:
+                    log_line = log_line[:197] + "..."
+                logger.warning(log_line)
         except Exception as provider_err:
-            logger.warning(
-                "Router failed with provider error (%s). Proceeding without re-prompt.",
-                provider_err,
-            )
+            err_clean = str(provider_err).replace("\n", " ").replace("\r", " ").strip()
+            err_clean = re.sub(r"'raw_text':\s*'.*?'", "'raw_text': '...'", err_clean)
+            err_clean = re.sub(r"'response_json':\s*\{.*?\}", "'response_json': {...}", err_clean)
+            log_line = f"Router failed with provider error: {err_clean}"
+            if len(log_line) > 200:
+                log_line = log_line[:197] + "..."
+            logger.warning(log_line)
     else:
         for provider, candidate_model in candidates:
             try:
@@ -630,20 +637,20 @@ async def analyze_workspace(
                     latency_ms = result.latency_ms
                     break
                 except Exception as reprompt_err:
-                    logger.warning(
-                        "Re-prompt for %s (%s) failed: %s. Proceeding to next candidate in router.",
-                        provider,
-                        candidate_model,
-                        reprompt_err,
-                    )
+                    err_clean = str(reprompt_err).replace("\n", " ").replace("\r", " ").strip()
+                    log_line = f"Re-prompt for {provider} ({candidate_model}) failed: {err_clean}"
+                    if len(log_line) > 200:
+                        log_line = log_line[:197] + "..."
+                    logger.warning(log_line)
                     continue
             except Exception as provider_err:
-                logger.warning(
-                    "Candidate %s (%s) failed with provider error (%s). Proceeding to next candidate in router without re-prompt.",
-                    provider,
-                    candidate_model,
-                    provider_err,
-                )
+                err_clean = str(provider_err).replace("\n", " ").replace("\r", " ").strip()
+                err_clean = re.sub(r"'raw_text':\s*'.*?'", "'raw_text': '...'", err_clean)
+                err_clean = re.sub(r"'response_json':\s*\{.*?\}", "'response_json': {...}", err_clean)
+                log_line = f"Candidate {provider} ({candidate_model}) failed: {err_clean}"
+                if len(log_line) > 200:
+                    log_line = log_line[:197] + "..."
+                logger.warning(log_line)
                 continue
 
     if analysis is None:
@@ -687,27 +694,15 @@ async def analyze_workspace(
                     flag.evidence.age_days = real_age
                     flag.evidence.author_or_assignee = real_author
 
-            # Build displayed reason from evidence in code without any model numbers
+            # Build displayed reason from data only
             if isinstance(real_item, PullRequest):
                 rev_str = f"reviewers: {', '.join(real_item.reviewers)}" if real_item.reviewers else "no reviewers"
-                base_reason = f"Open for {real_item.age_days} days, {rev_str}, last activity {real_item.last_commit_days} days ago"
+                base_reason = f"Open for {real_item.age_days} days, {rev_str}, last activity {real_item.last_commit_days} days ago."
             else:
                 assignee_str = f"assigned to {real_item.assignee}" if real_item.assignee else "unassigned"
-                base_reason = f"Open for {real_item.age_days} days, {assignee_str}, last activity {real_item.days_since_update} days ago"
+                base_reason = f"Open for {real_item.age_days} days, {assignee_str}, last activity {real_item.days_since_update} days ago."
 
-            # Check unsupported claims in reason
-            if has_unsupported_claim(flag.reason, real_item):
-                logger.info("Unsupported claim found in reason for %s. Replacing with rule-based facts.", canon_id)
-                flag.reason = base_reason
-            else:
-                # Keep LLM text only for non-numeric explanation, removing any digits before display
-                cleaned_llm = re.sub(r"\d+", "", flag.reason or "").strip()
-                cleaned_llm = re.sub(r"(?i)\b(open for|inactive for|no commits in|last activity|no activity for)\s+days?\b", "", cleaned_llm)
-                cleaned_llm = re.sub(r"\s+", " ", cleaned_llm).strip(" .,;:-")
-                if cleaned_llm and len(cleaned_llm) > 3 and cleaned_llm.lower() not in base_reason.lower():
-                    flag.reason = f"{base_reason}. {cleaned_llm}"
-                else:
-                    flag.reason = base_reason
+            flag.reason = base_reason
 
             # Check abandoned PR rules (age >= abandoned_pr_days)
             if isinstance(real_item, PullRequest) and real_item.age_days >= settings.abandoned_pr_days:

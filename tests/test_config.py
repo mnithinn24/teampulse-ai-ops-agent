@@ -9,6 +9,17 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test default values of application settings."""
     monkeypatch.delenv("JIRA_PROJECT_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("DRY_RUN_ACTIONS", raising=False)
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("SLACK_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.delenv("JIRA_EMAIL", raising=False)
+    monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
     settings = Settings(_env_file=None)
     assert settings.stale_pr_days == 7
     assert settings.stale_ticket_days == 14

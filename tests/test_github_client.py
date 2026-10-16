@@ -154,7 +154,10 @@ async def test_etag_caching() -> None:
 
 @pytest.mark.asyncio
 async def test_github_rate_limit_error() -> None:
-    """Test that HTTP 403 with rate limit exhaustion raises GitHubRateLimitError."""
+    """Test that HTTP 403 with rate limit exhaustion raises GitHubRateLimitError and marks unavailable."""
+    from app.integrations.github_client import clear_github_unavailable, is_github_available, get_github_unavailable_info
+
+    clear_github_unavailable()
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             403,
@@ -172,6 +175,78 @@ async def test_github_rate_limit_error() -> None:
             await client.fetch_open_prs("org/repo")
 
         assert exc_info.value.reset_time == 1700000000
+
+    # Verify GitHub is marked unavailable
+    assert not is_github_available(now_epoch=1699999999)
+    info = get_github_unavailable_info(now_epoch=1699999999)
+    assert not info["available"]
+    assert "rate limit exceeded" in info["reason"]
+    assert info["reset_formatted"] is not None
+
+    # After reset time passes, becomes available
+    assert is_github_available(now_epoch=1700000001)
+    clear_github_unavailable()
+
+
+@pytest.mark.asyncio
+async def test_github_unavailable_blocks_subsequent_requests() -> None:
+    """Test that when GitHub is marked unavailable, subsequent calls do not hit network and raise immediately."""
+    from app.integrations.github_client import clear_github_unavailable, mark_github_unavailable
+
+    clear_github_unavailable()
+    # Mark unavailable until far future
+    future_reset = int(datetime.now(timezone.utc).timestamp()) + 3600
+    mark_github_unavailable(future_reset)
+
+    network_called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal network_called
+        network_called = True
+        return httpx.Response(200, json=[])
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as mock_http:
+        client = GitHubClient(token="test-token", client=mock_http)
+        with pytest.raises(GitHubRateLimitError) as exc_info:
+            await client.fetch_open_prs("org/repo")
+
+        assert "unavailable until" in str(exc_info.value)
+        assert not network_called  # Did not hit network
+
+    clear_github_unavailable()
+
+
+@pytest.mark.asyncio
+async def test_github_logs_remaining_requests_info(caplog: pytest.LogCaptureFixture) -> None:
+    """Test that remaining requests are logged at INFO level once per run."""
+    import logging
+    from app.integrations.github_client import clear_github_unavailable
+
+    clear_github_unavailable()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[],
+            headers={
+                "x-ratelimit-remaining": "4950",
+                "x-ratelimit-reset": "1700000000",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with caplog.at_level(logging.INFO):
+        async with httpx.AsyncClient(transport=transport) as mock_http:
+            client = GitHubClient(token="test-token", client=mock_http)
+            await client.fetch_open_prs("org/repo")
+            # Second call in same run
+            await client.fetch_open_prs("org/repo")
+
+    # Check remaining log line was emitted exactly once
+    remaining_logs = [rec.message for rec in caplog.records if "GitHub API remaining requests: 4950" in rec.message]
+    assert len(remaining_logs) == 1
+    clear_github_unavailable()
 
 
 @pytest.mark.asyncio

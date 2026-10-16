@@ -183,3 +183,117 @@ def test_briefing_builder_respects_slack_limits() -> None:
     for b in blocks:
         if "text" in b and isinstance(b["text"], dict):
             assert len(b["text"].get("text", "")) <= 3000
+
+
+def test_three_briefing_wordings() -> None:
+    """Test the three briefing wordings: flags present, 0 new flags with stale items, and all clear (0 stale items)."""
+    now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+
+    # 1. New flags present
+    state_with_flags = TeamPulseState(workspace_id="test")
+    flags = [
+        {
+            "id": 1,
+            "item_id": "org/repo#10",
+            "title": "PR Title",
+            "reason": "Open for 10 days",
+            "urgency": "critical",
+            "suggested_action": "Review",
+        }
+    ]
+    briefing1 = build_slack_briefing(state=state_with_flags, flags_with_db=flags, now=now)
+    assert any("Critical Priority" in str(b) for b in briefing1["blocks"])
+    assert "All clear" not in briefing1["text"]
+
+    # 2. No new flags, but stale items exist (e.g. 3 PRs and 2 tickets still stale)
+    pr1 = PullRequest(id=1, number=1, title="PR 1", author="a", age_days=20, reviewers=[], last_commit_days=20, is_stale=True, repo="org/repo")
+    pr2 = PullRequest(id=2, number=2, title="PR 2", author="b", age_days=25, reviewers=[], last_commit_days=25, is_stale=True, repo="org/repo")
+    pr3 = PullRequest(id=3, number=3, title="PR 3", author="c", age_days=30, reviewers=[], last_commit_days=30, is_stale=True, repo="org/repo")
+    t1 = JiraIssue(key="KAN-1", title="Issue 1", status="Open", assignee=None, age_days=15, days_since_update=15, is_stale=True)
+    t2 = JiraIssue(key="KAN-2", title="Issue 2", status="In Progress", assignee=None, age_days=18, days_since_update=18, is_stale=True)
+
+    state_stale_items = TeamPulseState(
+        workspace_id="test",
+        github_data=[pr1, pr2, pr3],
+        jira_data=[t1, t2],
+    )
+    briefing2 = build_slack_briefing(state=state_stale_items, flags_with_db=[], now=now)
+    expected_stale_sentence = "No new items since the last briefing. 3 PRs and 2 tickets are still stale."
+    assert expected_stale_sentence in briefing2["text"]
+    assert any(expected_stale_sentence in b.get("text", {}).get("text", "") for b in briefing2["blocks"])
+    # Must NOT show "All clear"
+    assert "All clear" not in briefing2["text"]
+    assert not any("All clear" in str(b) for b in briefing2["blocks"])
+
+    # 3. All clear: no new flags AND 0 stale items (N=0, M=0)
+    pr_fresh = PullRequest(id=4, number=4, title="PR Fresh", author="d", age_days=2, reviewers=[], last_commit_days=1, is_stale=False, repo="org/repo")
+    t_fresh = JiraIssue(key="KAN-3", title="Issue Fresh", status="Done", assignee=None, age_days=2, days_since_update=1, is_stale=False)
+    state_all_clear = TeamPulseState(
+        workspace_id="test",
+        github_data=[pr_fresh],
+        jira_data=[t_fresh],
+    )
+    briefing3 = build_slack_briefing(state=state_all_clear, flags_with_db=[], now=now)
+    assert "All clear!" in briefing3["text"]
+    assert any("All clear!" in b.get("text", {}).get("text", "") for b in briefing3["blocks"])
+
+
+def test_briefing_github_failure_warning_and_no_all_clear() -> None:
+    """Requirement 1: GitHub failure produces WARNING line at start, no 'All clear', and 'unknown' counts."""
+    now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+    t_fresh = JiraIssue(key="KAN-1", title="Fresh Issue", status="Done", assignee=None, age_days=1, days_since_update=1, is_stale=False)
+
+    state_gh_failed = TeamPulseState(
+        workspace_id="test",
+        github_data={"status": "unavailable", "error": "rate limit exceeded, reset at 15:30 IST"},
+        jira_data=[t_fresh],
+        errors=["GitHub collection failed: rate limit exceeded, reset at 15:30 IST"],
+    )
+
+    briefing = build_slack_briefing(state=state_gh_failed, flags_with_db=[], now=now)
+
+    # 1. Briefing fallback text must start with WARNING
+    assert briefing["text"].startswith("WARNING: GitHub data unavailable (rate limit exceeded, reset at 15:30 IST). This briefing may be incomplete.")
+    # 2. First block in blocks must be the WARNING section
+    first_block_text = briefing["blocks"][0]["text"]["text"]
+    assert first_block_text.startswith("WARNING: GitHub data unavailable (rate limit exceeded, reset at 15:30 IST). This briefing may be incomplete.")
+
+    # 3. Must NEVER show "All clear"
+    assert "All clear" not in briefing["text"]
+    assert not any("All clear" in str(b) for b in briefing["blocks"])
+
+    # 4. Must NEVER show "0 open PRs"; counts must show "unknown"
+    assert "0 open PRs" not in briefing["text"]
+    assert "unknown open PRs (unknown stale)" in briefing["text"]
+    assert any("unknown open PRs (unknown stale)" in str(b) for b in briefing["blocks"])
+
+
+def test_briefing_all_clear_only_when_all_sources_succeeded() -> None:
+    """Requirement 1: 'All clear' is allowed only when every source was fetched successfully and N and M are 0."""
+    now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+    pr_fresh = PullRequest(id=1, number=1, title="PR", author="alice", age_days=1, reviewers=[], last_commit_days=1, is_stale=False, repo="org/repo")
+
+    # Jira failed
+    state_jira_failed = TeamPulseState(
+        workspace_id="test",
+        github_data=[pr_fresh],
+        jira_data={"status": "unavailable", "error": "auth failed: 401 Unauthorized"},
+        errors=["Jira collection failed: auth failed: 401 Unauthorized"],
+    )
+    briefing = build_slack_briefing(state=state_jira_failed, flags_with_db=[], now=now)
+    assert briefing["text"].startswith("WARNING: Jira data unavailable")
+    assert "All clear" not in briefing["text"]
+    assert "unknown stale tickets" in briefing["text"]
+
+    # Both succeeded and stale items are 0
+    t_fresh = JiraIssue(key="KAN-1", title="Issue", status="Done", assignee=None, age_days=1, days_since_update=1, is_stale=False)
+    state_ok = TeamPulseState(
+        workspace_id="test",
+        github_data=[pr_fresh],
+        jira_data=[t_fresh],
+    )
+    briefing_ok = build_slack_briefing(state=state_ok, flags_with_db=[], now=now)
+    assert "All clear!" in briefing_ok["text"]
+    assert not briefing_ok["text"].startswith("WARNING:")
+
+

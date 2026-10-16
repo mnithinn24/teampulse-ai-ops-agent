@@ -1,6 +1,5 @@
-"""Custom error hierarchy for TeamPulse."""
-
-from typing import Optional
+import re
+from typing import Any, Optional
 
 
 class TeamPulseError(Exception):
@@ -18,10 +17,38 @@ class TeamPulseError(Exception):
         self.details = details or {}
 
     def __str__(self) -> str:
-        """Return string representation of the error."""
-        if self.details:
-            return f"{self.message} (details: {self.details})"
+        """Return string representation of the error without leaking details dict."""
         return self.message
+
+
+def format_log_error(exc: Any, max_len: int = 200) -> str:
+    """Format an exception or message for single-line logging.
+
+    Cuts message to at most max_len characters ending with '...'.
+    Never logs response bodies or the 'details' dict.
+    """
+    if exc is None:
+        return ""
+
+    if hasattr(exc, "message") and isinstance(exc.message, str):
+        msg = exc.message
+    else:
+        msg = str(exc)
+
+    # Strip details dict patterns and response bodies
+    msg = re.sub(r"\(details:.*?\)", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"details=\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'details':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'raw_text':\s*'.*?'", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'raw_response':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'response_json':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+
+    cleaned = msg.replace("\n", " ").replace("\r", " ").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-")
+
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3] + "..."
+    return cleaned
 
 
 class IntegrationError(TeamPulseError):

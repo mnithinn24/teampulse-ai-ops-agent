@@ -89,6 +89,74 @@ def extract_totals(state: TeamPulseState) -> Tuple[int, int, int]:
     return open_prs, stale_prs, stale_tickets
 
 
+def clean_short_reason(reason: Optional[str], max_len: int = 80) -> str:
+    """Format and clean a short reason string of at most max_len characters."""
+    if not reason:
+        return "error during fetch"
+    msg = str(reason)
+    msg = re.sub(r"\(details:.*?\)", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"details=\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'details':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'raw_text':\s*'.*?'", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'raw_response':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'response_json':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+
+    cleaned = msg.replace("\n", " ").replace("\r", " ").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-")
+
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3] + "..."
+    return cleaned or "error during fetch"
+
+
+def inspect_source_health(state: TeamPulseState) -> Tuple[bool, Optional[str], bool, Optional[str]]:
+    """Determine whether GitHub and Jira sources succeeded or failed, and reasons if failed.
+
+    Returns:
+        Tuple of (gh_ok, gh_reason, jr_ok, jr_reason).
+    """
+    gh_ok = True
+    gh_reason = None
+    jr_ok = True
+    jr_reason = None
+
+    gh_data = getattr(state, "github_data", None)
+    if isinstance(gh_data, dict) and (gh_data.get("status") == "unavailable" or "error" in gh_data):
+        gh_ok = False
+        gh_reason = gh_data.get("error") or gh_data.get("reason") or "collection failed"
+    elif isinstance(gh_data, Exception):
+        gh_ok = False
+        gh_reason = str(gh_data)
+    elif isinstance(gh_data, str) and ("error" in gh_data.lower() or "unavailable" in gh_data.lower()):
+        gh_ok = False
+        gh_reason = gh_data
+
+    jr_data = getattr(state, "jira_data", None)
+    if isinstance(jr_data, dict) and (jr_data.get("status") == "unavailable" or "error" in jr_data):
+        jr_ok = False
+        jr_reason = jr_data.get("error") or jr_data.get("reason") or "collection failed"
+    elif isinstance(jr_data, Exception):
+        jr_ok = False
+        jr_reason = str(jr_data)
+    elif isinstance(jr_data, str) and ("error" in jr_data.lower() or "unavailable" in jr_data.lower()):
+        jr_ok = False
+        jr_reason = jr_data
+
+    errors = getattr(state, "errors", []) or []
+    for err in errors:
+        err_str = str(err)
+        if "github" in err_str.lower() and ("unavailable" in err_str.lower() or "error" in err_str.lower() or "rate limit" in err_str.lower()):
+            gh_ok = False
+            if not gh_reason:
+                gh_reason = err_str.split(":", 1)[-1].strip() if ":" in err_str else err_str
+        if "jira" in err_str.lower() and ("unavailable" in err_str.lower() or "error" in err_str.lower() or "fail" in err_str.lower()):
+            jr_ok = False
+            if not jr_reason:
+                jr_reason = err_str.split(":", 1)[-1].strip() if ":" in err_str else err_str
+
+    return gh_ok, gh_reason, jr_ok, jr_reason
+
+
 def truncate_slack_text(text: str, max_chars: int = 2800) -> str:
     """Safely truncate text to avoid exceeding Slack 3000 character block limit.
 
@@ -117,7 +185,7 @@ def build_slack_briefing(
     2. Summary line with totals (open PRs, stale PRs, stale tickets).
     3. Flags grouped by urgency (critical, urgent, watch) up to max_flags.
     4. Each flag has details section + actions block with Approve and Dismiss buttons.
-    5. Fallback 'all clear' message when 0 flags exist.
+    5. Fallback 'all clear' message when 0 flags exist and all sources succeeded.
     6. Strict adherence to Slack limits (<= 50 blocks, <= 3000 chars per text block).
 
     Args:
@@ -146,8 +214,27 @@ def build_slack_briefing(
     limit = max_flags if max_flags is not None else settings.max_flags_in_briefing
     date_str = current_time.strftime("%A, %B %d, %Y")
 
+    gh_ok, gh_reason, jr_ok, jr_reason = inspect_source_health(state)
+    warning_lines: List[str] = []
+    if not gh_ok:
+        short_reason = clean_short_reason(gh_reason, max_len=80)
+        warning_lines.append(f"WARNING: GitHub data unavailable ({short_reason}). This briefing may be incomplete.")
+    if not jr_ok:
+        short_reason = clean_short_reason(jr_reason, max_len=80)
+        warning_lines.append(f"WARNING: Jira data unavailable ({short_reason}). This briefing may be incomplete.")
+
     open_prs, stale_prs, stale_tickets = extract_totals(state)
     blocks: List[Dict[str, Any]] = []
+
+    # Warning blocks at the very top if any data source failed
+    for w in warning_lines:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": w,
+            },
+        })
 
     # 1. Header block
     blocks.append({
@@ -159,10 +246,14 @@ def build_slack_briefing(
         },
     })
 
-    # 2. Overview summary line
+    # 2. Overview summary line (never show '0 open PRs' if GitHub failed, show 'unknown')
+    open_prs_str = str(open_prs) if gh_ok else "unknown"
+    stale_prs_str = str(stale_prs) if gh_ok else "unknown"
+    stale_tickets_str = str(stale_tickets) if jr_ok else "unknown"
+
     summary_text = (
-        f":bar_chart: *Overview:* {open_prs} open PRs ({stale_prs} stale) • "
-        f"{stale_tickets} stale tickets"
+        f":bar_chart: *Overview:* {open_prs_str} open PRs ({stale_prs_str} stale) • "
+        f"{stale_tickets_str} stale tickets"
     )
     blocks.append({
         "type": "section",
@@ -173,12 +264,25 @@ def build_slack_briefing(
     })
     blocks.append({"type": "divider"})
 
+    warning_prefix = "\n".join(warning_lines)
+
     # 3. Check for zero flags
     if not flags_with_db:
-        all_clear_text = (
-            ":white_check_mark: *All clear!* No stale pull requests or blocked "
-            "tickets require team attention today."
-        )
+        if gh_ok and jr_ok:
+            if stale_prs == 0 and stale_tickets == 0:
+                all_clear_text = (
+                    ":white_check_mark: *All clear!* No stale pull requests or blocked "
+                    "tickets require team attention today."
+                )
+                tail = "All clear! No items require attention."
+            else:
+                stale_msg = f"No new items since the last briefing. {stale_prs} PRs and {stale_tickets} tickets are still stale."
+                all_clear_text = f":information_source: {stale_msg}"
+                tail = stale_msg
+        else:
+            all_clear_text = ":information_source: No new items flagged from available sources. Incomplete data due to source unavailability."
+            tail = "Data collection was incomplete."
+
         blocks.append({
             "type": "section",
             "text": {
@@ -186,7 +290,8 @@ def build_slack_briefing(
                 "text": all_clear_text,
             },
         })
-        fallback = f"TeamPulse Briefing — {date_str}: All clear! No items require attention."
+        base_fallback = f"TeamPulse Briefing — {date_str} (Overview: {open_prs_str} open PRs ({stale_prs_str} stale) • {stale_tickets_str} stale tickets): {tail}"
+        fallback = f"{warning_prefix}\n{base_fallback}".strip() if warning_prefix else base_fallback
         return {"text": fallback, "blocks": blocks}
 
     # Group flags by urgency
@@ -322,5 +427,7 @@ def build_slack_briefing(
     fallback_text = (
         f"TeamPulse Ops Briefing — {date_str}: {total_added} item(s) need review."
     )
+    if warning_prefix:
+        fallback_text = f"{warning_prefix}\n{fallback_text}"
 
     return {"text": fallback_text, "blocks": blocks, "included_flag_ids": included_flag_ids}

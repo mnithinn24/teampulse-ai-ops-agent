@@ -8,6 +8,8 @@ from typing import Any, Callable, Coroutine, Optional, Sequence, Tuple, Type, Ty
 
 logger = logging.getLogger(__name__)
 
+from app.core.errors import format_log_error
+
 T = TypeVar("T")
 
 
@@ -132,12 +134,11 @@ def retry_async(
 
                     attempt += 1
                     if attempt > max_retries:
-                        logger.error(
-                            "Function %s failed after %d retries. Raising: %s",
-                            func.__name__,
-                            max_retries,
-                            exc,
-                        )
+                        err_str = format_log_error(exc)
+                        log_line = f"Function {func.__name__} failed after {max_retries} retries. Raising: {err_str}"
+                        if len(log_line) > 200:
+                            log_line = log_line[:197] + "..."
+                        logger.error(log_line)
                         raise
 
                     # Exponential backoff formula: base_delay * (backoff_factor ** (attempt - 1))
@@ -147,15 +148,11 @@ def retry_async(
                         # Full jitter uniformly distributed between 0.8 * delay and 1.2 * delay
                         delay = delay * random.uniform(0.8, 1.2)
 
-                    logger.warning(
-                        "Attempt %d/%d for %s failed with %s: %s. Retrying in %.2fs",
-                        attempt,
-                        max_retries,
-                        func.__name__,
-                        type(exc).__name__,
-                        exc,
-                        delay,
-                    )
+                    err_str = format_log_error(exc)
+                    log_line = f"Attempt {attempt}/{max_retries} for {func.__name__} failed with {type(exc).__name__}: {err_str}. Retrying in {delay:.2f}s"
+                    if len(log_line) > 200:
+                        log_line = log_line[:197] + "..."
+                    logger.warning(log_line)
 
                     if on_retry:
                         try:

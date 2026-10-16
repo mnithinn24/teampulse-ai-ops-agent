@@ -121,8 +121,10 @@ async def test_gemini_client_generate_json() -> None:
 
 
 @pytest.mark.asyncio
-async def test_router_choice_by_task_type() -> None:
+async def test_router_choice_by_task_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that router routes simple tasks to Ollama and complex tasks to Gemini."""
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    get_settings.cache_clear()
     mock_ollama = AsyncMock(spec=OllamaClient)
     mock_ollama.check_health.return_value = True
     mock_ollama.generate_json.return_value = QueryIntent(
@@ -155,8 +157,10 @@ async def test_router_choice_by_task_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_router_gemini_failure_ollama_fallback() -> None:
+async def test_router_gemini_failure_ollama_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test fallback to Ollama when Gemini fails on an analysis task."""
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    get_settings.cache_clear()
     mock_gemini = AsyncMock(spec=GeminiClient)
     mock_gemini.generate_json.side_effect = AnalysisError("Gemini rate limited")
 

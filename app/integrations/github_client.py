@@ -1,18 +1,84 @@
 """GitHub REST API integration client with retry, rate limiting, and ETag caching."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.core.errors import GitHubError, GitHubRateLimitError
+from app.core.errors import GitHubError, GitHubRateLimitError, format_log_error
 from app.core.rate_limiter import AsyncRateLimiter
 from app.core.retry import retry_async
 
 logger = logging.getLogger(__name__)
+
+_github_unavailable_until: Optional[datetime] = None
+_github_unavailable_reason: Optional[str] = None
+_github_reset_time_epoch: Optional[int] = None
+_github_reset_formatted: Optional[str] = None
+
+
+def mark_github_unavailable(reset_timestamp: Optional[int], reason: Optional[str] = None) -> Tuple[datetime, str]:
+    """Mark GitHub as unavailable until reset_timestamp in configured timezone."""
+    global _github_unavailable_until, _github_unavailable_reason, _github_reset_time_epoch, _github_reset_formatted
+    settings = get_settings()
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(settings.timezone)
+    except Exception:
+        tz = timezone.utc
+
+    if reset_timestamp is not None:
+        dt_utc = datetime.fromtimestamp(reset_timestamp, tz=timezone.utc)
+    else:
+        dt_utc = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    dt_tz = dt_utc.astimezone(tz)
+    formatted = dt_tz.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    _github_unavailable_until = dt_utc
+    _github_reset_time_epoch = reset_timestamp
+    _github_reset_formatted = formatted
+    _github_unavailable_reason = reason or f"rate limit exceeded, reset at {formatted}"
+    return dt_utc, formatted
+
+
+def is_github_available(now_epoch: Optional[int] = None) -> bool:
+    """Return True if GitHub is currently available, False if rate-limited."""
+    global _github_unavailable_until
+    if _github_unavailable_until is not None:
+        if now_epoch is not None:
+            now_utc = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+        else:
+            now_utc = datetime.now(timezone.utc)
+        if now_utc < _github_unavailable_until:
+            return False
+        _github_unavailable_until = None
+    return True
+
+
+def get_github_unavailable_info(now_epoch: Optional[int] = None) -> Dict[str, Any]:
+    """Return dictionary with unavailability details."""
+    global _github_unavailable_until, _github_unavailable_reason, _github_reset_time_epoch, _github_reset_formatted
+    available = is_github_available(now_epoch=now_epoch)
+    return {
+        "available": available,
+        "until": _github_unavailable_until,
+        "reason": _github_unavailable_reason,
+        "reset_time": _github_reset_time_epoch,
+        "reset_formatted": _github_reset_formatted,
+    }
+
+
+def clear_github_unavailable() -> None:
+    """Reset GitHub unavailability state (primarily for tests)."""
+    global _github_unavailable_until, _github_unavailable_reason, _github_reset_time_epoch, _github_reset_formatted
+    _github_unavailable_until = None
+    _github_unavailable_reason = None
+    _github_reset_time_epoch = None
+    _github_reset_formatted = None
 
 
 class PullRequest(BaseModel):
@@ -89,6 +155,7 @@ class GitHubClient:
 
         # In-memory ETag cache: url -> (etag, cached_data)
         self._etag_cache: Dict[str, Tuple[str, Any]] = {}
+        self._logged_rate_limit: bool = False
 
     def _get_headers(self, etag: Optional[str] = None) -> Dict[str, str]:
         """Construct request headers with authorization and conditional ETag if available.
@@ -158,6 +225,18 @@ class GitHubClient:
             GitHubRateLimitError: If rate limit is exceeded (HTTP 403 or 429).
             GitHubError: If an unexpected HTTP or API error occurs.
         """
+        if not is_github_available():
+            info = get_github_unavailable_info()
+            reset_str = info.get("reset_formatted") or "later"
+            log_msg = f"GitHub is unavailable until {reset_str}. Skipping request."
+            if len(log_msg) > 200:
+                log_msg = log_msg[:197] + "..."
+            logger.warning(log_msg)
+            raise GitHubRateLimitError(
+                message=f"GitHub rate limit exceeded, unavailable until {reset_str}",
+                reset_time=info.get("reset_time"),
+            )
+
         url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
         cache_key = f"{url}?{sorted(params.items()) if params else ''}"
 
@@ -171,7 +250,11 @@ class GitHubClient:
             try:
                 response = await self._client.get(url, headers=headers, params=params)
             except httpx.RequestError as exc:
-                logger.error("Network error requesting %s: %s", url, exc)
+                err_clean = format_log_error(exc)
+                log_msg = f"Network error requesting {url}: {err_clean}"
+                if len(log_msg) > 200:
+                    log_msg = log_msg[:197] + "..."
+                logger.error(log_msg)
                 raise
 
         # Check for conditional cache hit
@@ -180,17 +263,35 @@ class GitHubClient:
             _, cached_data = self._etag_cache[cache_key]
             return cached_data
 
+        rate_remaining = response.headers.get("x-ratelimit-remaining")
+        reset_header = response.headers.get("x-ratelimit-reset")
+
+        # Log remaining requests at INFO level once per run
+        if rate_remaining is not None and not self._logged_rate_limit:
+            logger.info("GitHub API remaining requests: %s", rate_remaining)
+            self._logged_rate_limit = True
+
         # Check for rate limiting
-        if response.status_code in (403, 429):
-            rate_remaining = response.headers.get("x-ratelimit-remaining")
-            reset_header = response.headers.get("x-ratelimit-reset")
+        is_rate_exhausted = (
+            response.status_code in (403, 429)
+            and (
+                rate_remaining == "0"
+                or (rate_remaining is not None and str(rate_remaining).strip() == "0")
+                or "rate limit" in response.text.lower()
+            )
+        )
+        if is_rate_exhausted:
             reset_time = int(reset_header) if reset_header and reset_header.isdigit() else None
-            if rate_remaining == "0" or "rate limit" in response.text.lower():
-                raise GitHubRateLimitError(
-                    message=f"GitHub rate limit exceeded for {url}",
-                    reset_time=reset_time,
-                    details={"url": url, "status_code": response.status_code},
-                )
+            _, reset_str = mark_github_unavailable(reset_time)
+            log_msg = f"GitHub rate limit exceeded (remaining 0), unavailable until {reset_str}"
+            if len(log_msg) > 200:
+                log_msg = log_msg[:197] + "..."
+            logger.warning(log_msg)
+            raise GitHubRateLimitError(
+                message=f"GitHub rate limit exceeded, unavailable until {reset_str}",
+                reset_time=reset_time,
+                details={"url": url, "status_code": response.status_code, "reset_formatted": reset_str},
+            )
 
         if response.is_error:
             # Let 5xx trigger retry, raise GitHubError for permanent 4xx errors
@@ -226,7 +327,11 @@ class GitHubClient:
         try:
             raw_prs = await self._request(endpoint, params=params)
         except Exception as exc:
-            logger.error("Failed to fetch open PRs for repository %s: %s", repo, exc)
+            err_clean = format_log_error(exc)
+            log_msg = f"Failed to fetch open PRs for repository {repo}: {err_clean}"
+            if len(log_msg) > 200:
+                log_msg = log_msg[:197] + "..."
+            logger.error(log_msg)
             raise
 
         if not isinstance(raw_prs, list):
@@ -302,12 +407,8 @@ class GitHubClient:
                             pr_item.last_commit_days = self._calculate_days_ago(last_commit_dt, now)
                             pr_item.is_stale = (pr_item.age_days >= self.stale_pr_days) or (pr_item.last_commit_days >= self.stale_pr_days)
                 except Exception as commit_err:
-                    logger.debug(
-                        "Could not fetch commits for PR #%s in %s: %s",
-                        pr_item.number,
-                        pr_item.repo,
-                        commit_err,
-                    )
+                    err_clean = format_log_error(commit_err)
+                    logger.debug("Could not fetch commits for PR #%s in %s: %s", pr_item.number, pr_item.repo, err_clean)
 
         if target_lookups:
             await asyncio.gather(*[_fetch_commit_details(item[0], item[1]) for item in target_lookups])
@@ -331,15 +432,24 @@ class GitHubClient:
             return []
 
         all_prs: List[PullRequest] = []
+        errors: List[Exception] = []
         for repo in target_repos:
             try:
                 prs = await self.fetch_open_prs(repo)
                 all_prs.extend(prs)
+            except GitHubRateLimitError:
+                raise
             except Exception as exc:
-                logger.error("Failed to retrieve PRs for repository %s: %s", repo, exc)
-                # Spec: 'If a source fails, mark it "unavailable" and continue'
-                # We continue collecting from remaining repositories.
+                err_clean = format_log_error(exc)
+                log_msg = f"Failed to retrieve PRs for repository {repo}: {err_clean}"
+                if len(log_msg) > 200:
+                    log_msg = log_msg[:197] + "..."
+                logger.error(log_msg)
+                errors.append(exc)
                 continue
+
+        if not all_prs and errors:
+            raise errors[0]
 
         return all_prs
 

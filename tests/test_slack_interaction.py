@@ -148,8 +148,10 @@ def test_endpoint_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_approve_runs_executor_once_when_callback_sent_twice(test_db_session) -> None:
+async def test_approve_runs_executor_once_when_callback_sent_twice(test_db_session, monkeypatch: pytest.MonkeyPatch) -> None:
     """Approve button click runs executor exactly once even when callback is sent twice."""
+    monkeypatch.setenv("DRY_RUN_ACTIONS", "false")
+    get_settings.cache_clear()
     # Seed pending flag
     with test_db_session() as session:
         flag = Flag(
@@ -337,8 +339,10 @@ async def test_unauthorized_approver_is_rejected(test_db_session, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_executor_failure_sets_status_failed_and_shows_error(test_db_session) -> None:
+async def test_executor_failure_sets_status_failed_and_shows_error(test_db_session, monkeypatch: pytest.MonkeyPatch) -> None:
     """When action execution fails, status is marked failed and error is shown."""
+    monkeypatch.setenv("DRY_RUN_ACTIONS", "false")
+    get_settings.cache_clear()
     with test_db_session() as session:
         flag = Flag(
             workspace_id="test-ws",
@@ -464,3 +468,123 @@ async def test_dry_run_does_not_call_jira() -> None:
     res_jira = await execute_approved_action(flag_jira, jira_client=mock_jira, dry_run=True)
     assert "[DRY RUN]" in res_jira
     mock_jira.add_comment.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_second_approval_of_same_pr_creates_no_new_jira_issue(test_db_session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second approval of the same PR finds existing Jira issue, creates no new ticket, replies already tracked, and records skipped_duplicate."""
+    monkeypatch.setenv("DRY_RUN_ACTIONS", "false")
+    get_settings.cache_clear()
+    flag_pr1 = Flag(
+        workspace_id="test-ws",
+        item_type="github_pr",
+        item_id="owner/repo#42",
+        flag_reason="Stale PR",
+        suggested_action="Review and merge",
+        evidence_age_days=30,
+        evidence_author="alice",
+        status="pending",
+    )
+    flag_pr2 = Flag(
+        workspace_id="test-ws",
+        item_type="github_pr",
+        item_id="owner/repo#42",
+        flag_reason="Stale PR",
+        suggested_action="Review and merge",
+        evidence_age_days=31,
+        evidence_author="alice",
+        status="pending",
+    )
+    with test_db_session() as session:
+        session.add(flag_pr1)
+        session.add(flag_pr2)
+        session.commit()
+        id1 = flag_pr1.id
+        id2 = flag_pr2.id
+
+    mock_jira = AsyncMock(spec=JiraClient)
+    # First approval: search returns no duplicate, creates KAN-42
+    mock_jira.search_issues.return_value = []
+    mock_jira.create_issue.return_value = JiraIssue(
+        key="KAN-42",
+        title="Triage stale PR owner/repo#42",
+        status="Open",
+        assignee="unassigned",
+        age_days=0,
+        days_since_update=0,
+        comment_count=0,
+        is_stale=False,
+        project="KAN",
+    )
+    mock_slack = AsyncMock(spec=SlackClient)
+    mock_slack.update_message.return_value = {"ok": True}
+
+    payload1 = {
+        "user": {"id": "U12345", "username": "alice"},
+        "channel": {"id": "C999"},
+        "message": {
+            "ts": "1234567890.000100",
+            "blocks": [{"type": "actions", "block_id": f"flag_actions_{id1}", "elements": [{"value": str(id1)}]}],
+        },
+        "actions": [{"action_id": "approve_action", "value": str(id1)}],
+        "response_url": "https://hooks.slack.com/actions/test/dummy",
+    }
+
+    # 1. First approval creates KAN-42
+    await process_slack_interaction(
+        payload=payload1,
+        session_factory=test_db_session,
+        jira_client=mock_jira,
+        slack_client=mock_slack,
+    )
+    assert mock_jira.create_issue.await_count == 1
+
+    # Now Jira has the created issue
+    existing_issue = JiraIssue(
+        key="KAN-42",
+        title="Triage stale PR owner/repo#42",
+        status="Open",
+        assignee="unassigned",
+        age_days=1,
+        days_since_update=1,
+        comment_count=0,
+        is_stale=False,
+        project="KAN",
+    )
+    mock_jira.search_issues.return_value = [existing_issue]
+
+    payload2 = {
+        "user": {"id": "U12345", "username": "alice"},
+        "channel": {"id": "C999"},
+        "message": {
+            "ts": "1234567890.000200",
+            "blocks": [{"type": "actions", "block_id": f"flag_actions_{id2}", "elements": [{"value": str(id2)}]}],
+        },
+        "actions": [{"action_id": "approve_action", "value": str(id2)}],
+        "response_url": "https://hooks.slack.com/actions/test/dummy",
+    }
+
+    # 2. Second approval of the same PR
+    await process_slack_interaction(
+        payload=payload2,
+        session_factory=test_db_session,
+        jira_client=mock_jira,
+        slack_client=mock_slack,
+    )
+
+    # Jira create_issue was NOT called a second time
+    assert mock_jira.create_issue.await_count == 1
+
+    # Check Slack message updated with "Already tracked as KAN-42"
+    assert mock_slack.update_message.await_count == 2
+    second_slack_call = mock_slack.update_message.call_args_list[1]
+    assert "Already tracked as KAN-42" in second_slack_call[1]["text"]
+
+    # Check actions_taken in DB has status "skipped_duplicate"
+    with test_db_session() as session:
+        actions = session.query(ActionTaken).filter(ActionTaken.target_id == "owner/repo#42").all()
+        assert len(actions) == 2
+        assert actions[0].status == "executed"
+        assert actions[1].status == "skipped_duplicate"
+        assert actions[1].result == "Already tracked as KAN-42"
+

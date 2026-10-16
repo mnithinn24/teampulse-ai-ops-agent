@@ -21,8 +21,9 @@ async def scheduled_briefing_job(workspace_id: str = "default", run_type: str = 
         await trigger_pipeline_run(workspace_id=workspace_id, run_type=run_type, background=False)
         logger.info("Scheduled %s briefing job finished successfully.", run_type)
     except Exception as exc:
+        from app.core.errors import format_log_error
         # A job that fails must log the error and not stop the scheduler.
-        logger.error("Scheduled %s briefing job failed: %s", run_type, exc)
+        logger.error("Scheduled %s briefing job failed: %s", run_type, format_log_error(exc))
 
 
 def create_scheduler(settings=None) -> AsyncIOScheduler:

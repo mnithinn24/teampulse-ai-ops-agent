@@ -6,7 +6,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from app.config import get_settings
-from app.core.errors import IntegrationError, SlackError
+from app.core.errors import IntegrationError, SlackError, format_log_error
 from app.core.rate_limiter import AsyncRateLimiter
 from app.core.retry import retry_async
 
@@ -147,10 +147,10 @@ class SlackClient:
                 details={"channel": channel, "error": error_code, "status_code": exc.response.status_code if exc.response else None},
             ) from exc
         except Exception as exc:
-            logger.error("Unexpected error during Slack post_message: %s", exc)
+            logger.error("Unexpected error during Slack post_message: %s", format_log_error(exc))
             raise SlackError(
-                message=f"Unexpected error during Slack post_message: {exc}",
-                details={"channel": channel, "error": str(exc)},
+                message=f"Unexpected error during Slack post_message: {format_log_error(exc)}",
+                details={"channel": channel, "error": format_log_error(exc)},
             ) from exc
 
     @retry_async(
@@ -204,10 +204,10 @@ class SlackClient:
                 details={"channel": channel, "ts": ts, "error": error_code},
             ) from exc
         except Exception as exc:
-            logger.error("Unexpected error during Slack update_message: %s", exc)
+            logger.error("Unexpected error during Slack update_message: %s", format_log_error(exc))
             raise SlackError(
-                message=f"Unexpected error during Slack update_message: {exc}",
-                details={"channel": channel, "ts": ts, "error": str(exc)},
+                message=f"Unexpected error during Slack update_message: {format_log_error(exc)}",
+                details={"channel": channel, "ts": ts, "error": format_log_error(exc)},
             ) from exc
 
     @retry_async(
@@ -261,10 +261,10 @@ class SlackClient:
                 details={"channel": channel, "thread_ts": thread_ts, "error": error_code},
             ) from exc
         except Exception as exc:
-            logger.error("Unexpected error during Slack post_thread_reply: %s", exc)
+            logger.error("Unexpected error during Slack post_thread_reply: %s", format_log_error(exc))
             raise SlackError(
-                message=f"Unexpected error during Slack post_thread_reply: {exc}",
-                details={"channel": channel, "thread_ts": thread_ts, "error": str(exc)},
+                message=f"Unexpected error during Slack post_thread_reply: {format_log_error(exc)}",
+                details={"channel": channel, "thread_ts": thread_ts, "error": format_log_error(exc)},
             ) from exc
 
     @retry_async(
@@ -312,8 +312,8 @@ class SlackClient:
                 details={"channel": channel, "user": user, "error": error_code},
             ) from exc
         except Exception as exc:
-            logger.error("Unexpected error during Slack post_ephemeral: %s", exc)
+            logger.error("Unexpected error during Slack post_ephemeral: %s", format_log_error(exc))
             raise SlackError(
-                message=f"Unexpected error during Slack post_ephemeral: {exc}",
-                details={"channel": channel, "user": user, "error": str(exc)},
+                message=f"Unexpected error during Slack post_ephemeral: {format_log_error(exc)}",
+                details={"channel": channel, "user": user, "error": format_log_error(exc)},
             ) from exc

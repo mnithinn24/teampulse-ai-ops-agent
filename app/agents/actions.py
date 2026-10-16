@@ -91,7 +91,7 @@ async def execute_approved_action(
                 if jira_client is None:
                     await client.close()
 
-        elif item_type == ITEM_TYPE_GITHUB_PR:
+        elif item_type in (ITEM_TYPE_GITHUB_PR, "github_pr"):
             summary = f"Triage stale PR {item_id}"
             pr_url = build_pr_url(item_id)
             age = flag.evidence_age_days if flag.evidence_age_days is not None else "N/A"
@@ -119,6 +119,31 @@ async def execute_approved_action(
 
             client = jira_client or JiraClient()
             try:
+                # Duplicate ticket check: search Jira in the project for an open issue
+                # whose summary contains "Triage stale PR <canonical id>"
+                jql = f"project = '{project_key}' AND resolution = Unresolved"
+                try:
+                    open_issues = await client.search_issues(jql=jql)
+                except Exception as search_err:
+                    logger.warning("Failed to search Jira for duplicates: %s", search_err)
+                    open_issues = []
+
+                target_phrase = f"Triage stale PR {item_id}"
+                duplicate = None
+                if isinstance(open_issues, (list, tuple)):
+                    duplicate = next(
+                        (
+                            i
+                            for i in open_issues
+                            if target_phrase.lower() in (getattr(i, "title", "") or "").lower()
+                        ),
+                        None,
+                    )
+
+                if duplicate:
+                    logger.info("Open issue already exists for PR %s: %s", item_id, duplicate.key)
+                    return f"Already tracked as {duplicate.key}"
+
                 created_issue = await client.create_issue(
                     project_key=project_key,
                     summary=summary,

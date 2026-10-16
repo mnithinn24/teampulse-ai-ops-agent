@@ -167,7 +167,11 @@ class OllamaClient:
             parsed_json = json.loads(cleaned_content)
             return schema.model_validate(parsed_json)
         except Exception as exc:
-            logger.warning("Ollama response failed schema validation: %s. Content: %s", exc, cleaned_content)
+            err_msg = str(exc).replace("\n", " ").replace("\r", " ").strip()
+            log_line = f"Ollama response failed schema validation: {err_msg}"
+            if len(log_line) > 200:
+                log_line = log_line[:197] + "..."
+            logger.warning(log_line)
             raise InvalidJSONError(
                 message=f"Ollama output failed validation for schema {schema.__name__}: {exc}",
                 details={"content": cleaned_content, "error": str(exc)},

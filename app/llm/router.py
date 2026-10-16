@@ -341,7 +341,7 @@ class LLMRouter:
 
                 # Ensure log line is at most 200 characters
                 if len(log_line) > 200:
-                    log_line = log_line[:200]
+                    log_line = log_line[:197] + "..."
                 logger.warning(log_line)
                 errors.append(f"{provider}({model_name}): {exc}")
 

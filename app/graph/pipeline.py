@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from langgraph.graph import END, START, StateGraph
 
 from app.config import get_settings
+from app.core.errors import format_log_error
 from app.graph.state import TeamPulseState
 from app.integrations.github_client import GitHubClient, PullRequest
 from app.integrations.jira_client import JiraClient, JiraIssue
@@ -61,25 +62,33 @@ async def run_collect(
 
     # Process GitHub outcome
     if isinstance(gh_result, Exception):
-        logger.warning("GitHub collection marked unavailable: %s", gh_result)
+        err_clean = format_log_error(gh_result)
+        log_line = f"GitHub collection marked unavailable: {err_clean}"
+        if len(log_line) > 200:
+            log_line = log_line[:197] + "..."
+        logger.warning(log_line)
         github_data: Any = {
             "status": "unavailable",
-            "error": str(gh_result),
+            "error": err_clean,
             "prs": [],
         }
-        new_errors.append(f"GitHub collection unavailable: {gh_result}")
+        new_errors.append(f"GitHub collection unavailable: {err_clean}")
     else:
         github_data = gh_result
 
     # Process Jira outcome
     if isinstance(jr_result, Exception):
-        logger.warning("Jira collection marked unavailable: %s", jr_result)
+        err_clean = format_log_error(jr_result)
+        log_line = f"Jira collection marked unavailable: {err_clean}"
+        if len(log_line) > 200:
+            log_line = log_line[:197] + "..."
+        logger.warning(log_line)
         jira_data: Any = {
             "status": "unavailable",
-            "error": str(jr_result),
+            "error": err_clean,
             "issues": [],
         }
-        new_errors.append(f"Jira collection unavailable: {jr_result}")
+        new_errors.append(f"Jira collection unavailable: {err_clean}")
     else:
         jira_data = jr_result
 

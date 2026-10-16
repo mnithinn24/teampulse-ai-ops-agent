@@ -9,7 +9,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.core.errors import IntegrationError, JiraError
+from app.core.errors import IntegrationError, JiraError, format_log_error
 from app.core.rate_limiter import AsyncRateLimiter
 from app.core.retry import retry_async
 
@@ -280,9 +280,13 @@ class JiraClient:
                     json=json_data,
                 )
             except httpx.RequestError as exc:
-                logger.error("Jira request to %s failed with network error: %s", url, exc)
+                err_clean = format_log_error(exc)
+                log_line = f"Jira request to {url} failed with network error: {err_clean}"
+                if len(log_line) > 200:
+                    log_line = log_line[:197] + "..."
+                logger.error(log_line)
                 raise JiraError(
-                    message=f"Network error connecting to Jira: {exc}",
+                    message=f"Network error connecting to Jira: {err_clean}",
                     details={"url": url, "error": str(exc)},
                 ) from exc
 
@@ -291,11 +295,14 @@ class JiraClient:
             if response.status_code >= 500:
                 response.raise_for_status()
 
-            error_msg = f"Jira API error {response.status_code}: {response.text}"
-            logger.error(error_msg)
+            err_text = format_log_error(response.text)
+            log_msg = f"Jira API error {response.status_code}: {err_text}"
+            if len(log_msg) > 200:
+                log_msg = log_msg[:197] + "..."
+            logger.error(log_msg)
             raise JiraError(
-                message=error_msg,
-                details={"status_code": response.status_code, "url": url, "body": response.text},
+                message=log_msg,
+                details={"status_code": response.status_code, "url": url},
             )
 
         if response.status_code == 204:

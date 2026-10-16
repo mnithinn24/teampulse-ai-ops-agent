@@ -853,3 +853,100 @@ async def test_recommendation_with_no_id_is_replaced(
     # Must be replaced to name the real canonical ID
     assert "acme/service#10" in analysis.one_recommendation
     assert "Focus on unblocking stalled work items: acme/service#10." in analysis.one_recommendation
+
+
+@pytest.mark.asyncio
+async def test_reason_text_built_from_data_only_with_no_llm_fragment() -> None:
+    """The displayed reason must be built from data only, with no leftover fragment of LLM text."""
+    stale_pr = PullRequest(
+        id=6454,
+        number=6454,
+        title="Fix connection pooling",
+        author="alice",
+        age_days=3267,
+        reviewers=[],
+        last_commit_days=3267,
+        is_stale=True,
+        repo="psf/requests",
+    )
+
+    llm_analysis = Analysis(
+        patterns=["Stale PR pattern"],
+        priority_flags=[
+            PriorityFlag(
+                title="Stale PR",
+                reason="Open for 500 days with no reviewers. Pull request has been with no reviewers",
+                urgency="urgent",
+                source="github",
+                item_id="psf/requests#6454",
+                suggested_action="Review and merge or close",
+            )
+        ],
+        shipped_this_period=[],
+        velocity_note="Note",
+        one_recommendation="Review psf/requests#6454.",
+    )
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.route.return_value = LLMResult(
+        data=llm_analysis,
+        model_name="mock-model",
+        provider="gemini",
+        task_type="analysis",
+        latency_ms=50.0,
+    )
+
+    state = TeamPulseState(
+        workspace_id="ws-reason-grounding",
+        github_data=[stale_pr],
+    )
+
+    analysis, _, _ = await analyze_workspace(state, router=mock_router)
+    flag = analysis.priority_flags[0]
+
+    # Grounded reason must be data-driven only
+    assert flag.reason == "Open for 3267 days, no reviewers, last activity 3267 days ago."
+    # Leftover fragment of LLM text must be completely absent
+    assert "Pull request has been with no reviewers" not in flag.reason
+
+
+@pytest.mark.asyncio
+async def test_provider_error_logged_at_most_200_chars_in_analyze(caplog: pytest.LogCaptureFixture) -> None:
+    """Log a provider error as one line of at most 200 characters in analyze.py and never print the full error body."""
+    stale_pr = PullRequest(
+        id=1,
+        number=1,
+        title="Stale PR",
+        author="alice",
+        age_days=30,
+        reviewers=[],
+        last_commit_days=30,
+        is_stale=True,
+        repo="owner/repo",
+    )
+
+    giant_error_body = "FATAL_ERROR: " + ("X" * 3000) + " {'raw_text': 'huge', 'response_json': {'k': 'v'}}"
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.route.side_effect = Exception(giant_error_body)
+
+    state = TeamPulseState(
+        workspace_id="ws-error-log",
+        github_data=[stale_pr],
+    )
+
+    analysis, model_name, _ = await analyze_workspace(state, router=mock_router)
+
+    # Rule based fallback engaged
+    assert model_name == "rule_based_fallback"
+    assert len(analysis.priority_flags) >= 1
+
+    # Verify captured log records from analyze.py
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING" and "analyze" in r.name]
+    assert len(warning_records) >= 1
+    for r in warning_records:
+        assert len(r.message) <= 200, f"Log record exceeded 200 characters ({len(r.message)}): {r.message}"
+        assert "\n" not in r.message
+        assert "\r" not in r.message
+        assert ("X" * 300) not in r.message
+
