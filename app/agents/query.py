@@ -24,6 +24,75 @@ from app.llm.schemas import QueryAnswerOutput, QueryIntent
 logger = logging.getLogger(__name__)
 
 
+def is_out_of_scope_by_keywords(question: str) -> bool:
+    """Keyword rule: no mention of PR, pull request, ticket, issue, Jira, GitHub, stale, KAN or a repo name means out_of_scope."""
+    q_lower = question.lower()
+    settings = get_settings()
+
+    # Mention of PR / pull request
+    if re.search(r"\b(pr|prs|pull\s+requests?)\b", q_lower):
+        return False
+
+    # Mention of ticket, issue, Jira, GitHub, stale, KAN
+    if re.search(r"\b(tickets?|issues?|jira|github|stale|kan)\b", q_lower):
+        return False
+
+    # Regex matches for Jira keys or PR references
+    if JIRA_KEY_REGEX.search(question) or FULL_PR_REGEX.search(question) or PARTIAL_PR_REGEX.search(question):
+        return False
+
+    # Check configured GitHub repo names and basenames
+    for repo in settings.github_repos:
+        repo_lower = repo.lower()
+        if repo_lower in q_lower:
+            return False
+        basename = repo_lower.split("/")[-1]
+        if basename and basename in q_lower:
+            return False
+
+    return True
+
+
+def extract_lookup_id(question: str, entities: Optional[List[str]] = None) -> Optional[str]:
+    """Extract a target work item ID from a lookup question or entities."""
+    # 1. Check Jira keys (e.g. KAN-42, PROJ-123)
+    jira_matches = JIRA_KEY_REGEX.findall(question)
+    if jira_matches:
+        return jira_matches[0]
+
+    # 2. Check full PR IDs (e.g. owner/repo#42)
+    for m in FULL_PR_REGEX.finditer(question):
+        return f"{m.group(1)}#{m.group(2)}"
+
+    # 3. Check partial PR IDs (e.g. #42, PR #42)
+    for m in PARTIAL_PR_REGEX.finditer(question):
+        return f"#{m.group(1)}"
+
+    # 4. Check explicit PR with bare number: e.g. "PR 42", "pull request 42"
+    pr_num_match = re.search(r"\b(?:pr|pull\s+request)\s+#?(\d+)\b", question, re.IGNORECASE)
+    if pr_num_match:
+        return f"#{pr_num_match.group(1)}"
+
+    # 5. Check entities
+    if entities:
+        for ent in entities:
+            if JIRA_KEY_REGEX.match(ent):
+                return ent
+            for m in FULL_PR_REGEX.finditer(ent):
+                return f"{m.group(1)}#{m.group(2)}"
+            for m in PARTIAL_PR_REGEX.finditer(ent):
+                return f"#{m.group(1)}"
+
+    return None
+
+
+def is_id_in_valid_data(target_id: str, valid_ids: Set[str]) -> bool:
+    """Check if target_id exists in the valid canonical IDs."""
+    if not valid_ids:
+        return False
+    return normalize_llm_id(target_id, valid_ids) is not None
+
+
 def classify_intent_with_rules(question: str) -> QueryIntent:
     """Fallback keyword-based rule classifier for user query intent.
 
@@ -31,8 +100,17 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
         question: The natural language question string.
 
     Returns:
-        Structured QueryIntent with sources, entities, query_type, and time_range.
+        Structured QueryIntent with sources, entities, query_type, operation, and time_range.
     """
+    if is_out_of_scope_by_keywords(question):
+        return QueryIntent(
+            operation="out_of_scope",
+            query_type="out_of_scope",
+            sources_needed=[],
+            entities=[],
+            time_range="24h",
+        )
+
     q_lower = question.lower()
     sources: List[str] = []
 
@@ -41,7 +119,7 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
         sources.append("github")
 
     # Check Jira keywords
-    if any(k in q_lower for k in ["jira", "ticket", "issue", "bug", "task", "story", "sprint"]):
+    if any(k in q_lower for k in ["jira", "ticket", "issue", "bug", "task", "story", "sprint", "kan"]):
         sources.append("jira")
 
     if not sources:
@@ -52,21 +130,30 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
     pr_matches = FULL_PR_REGEX.findall(question) + PARTIAL_PR_REGEX.findall(question)
     entities = list(set(jira_keys + pr_matches))
 
-    # Determine query category
+    # Determine query category & operation
+    operation = "status"
     query_type = "status"
-    if any(k in q_lower for k in ["block", "blocker", "stuck"]):
+    if jira_keys or pr_matches or any(k in q_lower for k in ["tell me about", "lookup", "look up", "find", "show me", "check"]):
+        operation = "lookup"
+        query_type = "lookup"
+    elif any(k in q_lower for k in ["block", "blocker", "stuck"]):
+        operation = "blockers"
         query_type = "blockers"
     elif any(k in q_lower for k in ["stale", "inactive", "old", "abandoned"]):
+        operation = "stale"
         query_type = "stale"
     elif any(k in q_lower for k in ["velocity", "speed", "throughput"]):
+        operation = "velocity"
         query_type = "velocity"
     elif any(k in q_lower for k in ["unassigned", "who is", "assignee", "owner"]):
+        operation = "unassigned"
         query_type = "unassigned"
 
     return QueryIntent(
         sources_needed=sources,
         entities=entities,
         query_type=query_type,
+        operation=operation,
         time_range="24h",
     )
 
@@ -91,17 +178,23 @@ async def classify_query_intent(
         f"Classify the following software engineering operational question into structured intent:\n\n"
         f"Question: \"{question}\"\n\n"
         f"Identify:\n"
-        f"- sources_needed: list containing 'github', 'jira', or both\n"
+        f"- operation: 'out_of_scope' if the question is not about the team's GitHub pull requests or Jira tickets (weather, general knowledge, jokes, personal topics); 'lookup' if asking about a specific item/ID; or 'status', 'blockers', 'stale', 'velocity'\n"
+        f"- sources_needed: list containing 'github', 'jira', or both (empty if out_of_scope)\n"
         f"- entities: list of specific ticket IDs, repos, or usernames mentioned\n"
-        f"- query_type: status, blockers, stale, velocity, unassigned\n"
+        f"- query_type: status, blockers, stale, velocity, unassigned, lookup, or out_of_scope\n"
         f"- time_range: 24h, 7d, or all\n"
     )
 
     try:
         # Simple task path routes to Ollama if enabled/healthy, then Gemini fallback
         result = await llm_router.route(prompt, schema=QueryIntent, task_type="intent")
-        logger.info("Query classified by model '%s': %s", result.model_name, result.data)
-        return result.data, result.model_name
+        intent_data = result.data
+        if intent_data.query_type == "out_of_scope" and not intent_data.operation:
+            intent_data.operation = "out_of_scope"
+        elif intent_data.operation == "out_of_scope" and intent_data.query_type != "out_of_scope":
+            intent_data.query_type = "out_of_scope"
+        logger.info("Query classified by model '%s': %s", result.model_name, intent_data)
+        return intent_data, result.model_name
     except Exception as exc:
         logger.warning("LLM intent classification failed (%s). Using rule-based classifier.", exc)
         return classify_intent_with_rules(question), "rule_based_classifier"
@@ -302,6 +395,17 @@ async def handle_plain_language_query(
     # Step 1: Intent Classification
     intent, classifier_model = await classify_query_intent(question, router=llm_router)
 
+    # Fast return for out-of-scope questions: do not fetch any data and do not call large model
+    if intent.operation == "out_of_scope" or intent.query_type == "out_of_scope":
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        return {
+            "answer": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+            "sources_used": [],
+            "item_ids": [],
+            "model_used": classifier_model,
+            "latency_ms": round(latency_ms, 2),
+        }
+
     # Step 2: Source Collection
     prs, tickets, sources_used = await fetch_query_sources(
         sources_needed=intent.sources_needed,
@@ -310,6 +414,18 @@ async def handle_plain_language_query(
     )
 
     context_str, items_map, valid_ids = build_query_context(prs, tickets)
+
+    # Check for lookup of an ID not in the collected data: build answer in code, no LLM call, item_ids = []
+    target_id = extract_lookup_id(question, intent.entities)
+    if target_id and not is_id_in_valid_data(target_id, valid_ids):
+        latency_ms = (time.perf_counter() - t_start) * 1000
+        return {
+            "answer": f"{target_id} is not in the collected data.",
+            "sources_used": sources_used,
+            "item_ids": [],
+            "model_used": "rule_based",
+            "latency_ms": round(latency_ms, 2),
+        }
 
     # If no data exists at all
     if not valid_ids:

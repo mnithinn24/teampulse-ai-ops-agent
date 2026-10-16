@@ -422,3 +422,180 @@ def test_percentile_and_metrics_calculation() -> None:
     assert summary["fallback_runs"] == 1
     assert summary["total_items_collected"] == 15
     assert summary["total_flags_created"] == 6
+
+
+# -----------------------------------------------------------------------------
+# 5. Out-of-Scope & Code-Based Missing ID Lookup Tests
+# -----------------------------------------------------------------------------
+def test_out_of_scope_keyword_rules() -> None:
+    """Keyword rule detects out_of_scope queries when no PR/ticket/Jira/GitHub/stale/KAN/repo is mentioned."""
+    # Out of scope queries
+    for q in ["What is the weather in Paris?", "Tell me a joke", "Who won the game last night?"]:
+        intent = classify_intent_with_rules(q)
+        assert intent.operation == "out_of_scope"
+        assert intent.query_type == "out_of_scope"
+        assert intent.sources_needed == []
+
+    # In-scope queries
+    intent_pr = classify_intent_with_rules("Are there any stale PRs?")
+    assert intent_pr.operation != "out_of_scope"
+    assert "github" in intent_pr.sources_needed
+
+    intent_jira = classify_intent_with_rules("What tickets are currently blocked in Jira?")
+    assert intent_jira.operation != "out_of_scope"
+    assert "jira" in intent_jira.sources_needed
+
+    intent_lookup = classify_intent_with_rules("Tell me about ticket KAN-42")
+    assert intent_lookup.operation == "lookup"
+    assert "KAN-42" in intent_lookup.entities
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_query_no_data_fetch_and_no_llm_call() -> None:
+    """Out-of-scope questions immediately return honest scope limitation without data fetch or large model call."""
+    mock_router = AsyncMock(spec=LLMRouter)
+    # Simulate LLM classifier returning out_of_scope
+    mock_router.route.return_value = LLMResult(
+        data=QueryIntent(sources_needed=[], entities=[], query_type="out_of_scope", operation="out_of_scope"),
+        model_name="mock-classifier",
+        provider="ollama",
+        task_type="intent",
+        latency_ms=10.0,
+    )
+    mock_router.get_candidates = AsyncMock()
+    mock_router.call_candidate = AsyncMock()
+
+    mock_gh = AsyncMock()
+    mock_jr = AsyncMock()
+
+    res = await handle_plain_language_query(
+        question="What is the weather in Paris?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    # 1. Returned required prompt message
+    assert res["answer"] == "I can only answer questions about your GitHub pull requests and Jira tickets."
+    assert res["sources_used"] == []
+    assert res["item_ids"] == []
+
+    # 2. No data fetch occurred
+    mock_gh.fetch_all_open_prs.assert_not_called()
+    mock_jr.fetch_open_issues.assert_not_called()
+
+    # 3. No large model called
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_query_fallback_when_classifier_fails() -> None:
+    """When the classifier fails on an out-of-scope question, keyword rule catches it with no data fetch."""
+    mock_router = AsyncMock(spec=LLMRouter)
+    # Router fails/raises exception
+    mock_router.route.side_effect = RuntimeError("Ollama connection refused")
+    mock_router.get_candidates = AsyncMock()
+    mock_router.call_candidate = AsyncMock()
+
+    mock_gh = AsyncMock()
+    mock_jr = AsyncMock()
+
+    res = await handle_plain_language_query(
+        question="Can you tell me a funny joke?",
+        github_client=mock_gh,
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    assert res["answer"] == "I can only answer questions about your GitHub pull requests and Jira tickets."
+    assert res["sources_used"] == []
+    assert res["item_ids"] == []
+
+    # Assert no data fetch
+    mock_gh.fetch_all_open_prs.assert_not_called()
+    mock_jr.fetch_open_issues.assert_not_called()
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lookup_missing_ticket_id_builds_code_answer_no_llm_call() -> None:
+    """Lookup of a Jira ticket ID not present in data returns '<ID> is not in the collected data.' with no LLM call."""
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.route.return_value = LLMResult(
+        data=QueryIntent(sources_needed=["jira"], entities=["KAN-42"], query_type="lookup", operation="lookup"),
+        model_name="mock-classifier",
+        provider="ollama",
+        task_type="intent",
+        latency_ms=10.0,
+    )
+    mock_router.get_candidates = AsyncMock()
+    mock_router.call_candidate = AsyncMock()
+
+    # Data only contains KAN-1 and KAN-2, NOT KAN-42
+    ticket1 = JiraIssue(
+        key="KAN-1",
+        title="Setup CI pipeline",
+        assignee="alice",
+        age_days=3,
+        days_since_update=1,
+        is_stale=False,
+        status="Done",
+    )
+    mock_jr = AsyncMock()
+    mock_jr.fetch_open_issues.return_value = [ticket1]
+
+    res = await handle_plain_language_query(
+        question="Tell me about ticket KAN-42",
+        jira_client=mock_jr,
+        router=mock_router,
+    )
+
+    assert res["answer"] == "KAN-42 is not in the collected data."
+    assert res["item_ids"] == []
+    # Assert no LLM call for answering
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lookup_missing_pr_id_builds_code_answer_no_llm_call() -> None:
+    """Lookup of a PR ID not present in data returns '<ID> is not in the collected data.' with no LLM call."""
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_router.route.return_value = LLMResult(
+        data=QueryIntent(sources_needed=["github"], entities=["#999"], query_type="lookup", operation="lookup"),
+        model_name="mock-classifier",
+        provider="ollama",
+        task_type="intent",
+        latency_ms=10.0,
+    )
+    mock_router.get_candidates = AsyncMock()
+    mock_router.call_candidate = AsyncMock()
+
+    # Data only contains PR #10
+    pr1 = PullRequest(
+        id=10,
+        number=10,
+        title="Fix typo",
+        author="bob",
+        age_days=1,
+        last_commit_days=1,
+        is_stale=False,
+        repo="myorg/backend",
+    )
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = [pr1]
+
+    res = await handle_plain_language_query(
+        question="What is the status of PR #999?",
+        github_client=mock_gh,
+        router=mock_router,
+    )
+
+    assert res["answer"] == "#999 is not in the collected data."
+    assert res["item_ids"] == []
+    # Assert no LLM call for answering
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+

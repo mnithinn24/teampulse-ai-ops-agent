@@ -73,12 +73,17 @@ class QueryIntent(BaseModel):
     )
     query_type: str = Field(
         default="status",
-        description="Category of query (e.g. status, blockers, stale, velocity)",
+        description="Category of query (e.g. status, blockers, stale, velocity, lookup, out_of_scope)",
+    )
+    operation: Optional[str] = Field(
+        default=None,
+        description="Operation type: out_of_scope, lookup, status, blockers, stale, velocity",
     )
     time_range: str = Field(
         default="24h",
         description="Temporal window relevant to the query (e.g. 24h, 7d, current_sprint)",
     )
+
 
 
 class QueryAnswerOutput(BaseModel):
