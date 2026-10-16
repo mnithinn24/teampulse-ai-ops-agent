@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 import re
-from typing import Any, List, Union
+from typing import Any, List, Optional, Union
 from zoneinfo import ZoneInfo
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -151,6 +151,43 @@ class Settings(BaseSettings):
         default="Asia/Kolkata",
         description="IANA Timezone string for briefing formatting and time displays",
     )
+
+    # Phase 5: Scheduler, Admin API, and Rate Limiting
+    enable_scheduler: bool = Field(
+        default=False,
+        description="Whether background APScheduler is enabled",
+    )
+    morning_briefing_time: str = Field(
+        default="09:30",
+        description="Daily morning briefing trigger time (HH:MM)",
+    )
+    evening_briefing_time: str = Field(
+        default="17:30",
+        description="Daily evening briefing trigger time (HH:MM)",
+    )
+    admin_api_key: Optional[str] = Field(
+        default=None,
+        description="Secret API key required for administrative routes",
+    )
+    query_rate_limit_per_minute: int = Field(
+        default=5,
+        description="Maximum natural language queries allowed per minute per Slack user",
+    )
+
+    @field_validator("morning_briefing_time", "evening_briefing_time", mode="after")
+    @classmethod
+    def validate_briefing_time_format(cls, value: str) -> str:
+        """Validate briefing time matches 24-hour HH:MM format."""
+        parts = value.strip().split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid briefing time format '{value}', expected 'HH:MM'")
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                raise ValueError()
+        except ValueError:
+            raise ValueError(f"Invalid briefing time '{value}': hour must be 0-23, minute 0-59")
+        return value.strip()
 
     @field_validator("timezone", mode="after")
     @classmethod

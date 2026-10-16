@@ -79,3 +79,10 @@ class QueryIntent(BaseModel):
         default="24h",
         description="Temporal window relevant to the query (e.g. 24h, 7d, current_sprint)",
     )
+
+
+class QueryAnswerOutput(BaseModel):
+    """Structured response container for plain-language query answers."""
+
+    answer: str = Field(..., description="Factual answer grounded strictly in collected work items")
+

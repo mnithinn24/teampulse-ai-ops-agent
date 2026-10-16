@@ -215,24 +215,38 @@ async def act_on_workspace(
                     pass
             db_session.commit()
 
-        # 4. Record agent run in DB with slack_channel and slack_ts
-        agent_run = AgentRun(
-            workspace_id=workspace_id,
-            run_type=state.run_type or "ondemand",
-            status="completed",
-            query=state.query,
-            github_data=json.dumps(state.github_data, default=str) if state.github_data else None,
-            jira_data=json.dumps(state.jira_data, default=str) if state.jira_data else None,
-            analysis=json.dumps(state.analysis, default=str) if state.analysis else None,
-            briefing=json.dumps({"text": fallback_text, "blocks": blocks}, default=str),
-            slack_channel=slack_channel,
-            slack_ts=slack_ts,
-            errors=json.dumps(new_errors) if new_errors else None,
-            created_at=utc_now(),
-            completed_at=utc_now(),
-        )
-        db_session.add(agent_run)
-        db_session.commit()
+        # 4. Record or update agent run in DB with slack_channel and slack_ts
+        existing_run = None
+        if getattr(state, "run_id", None):
+            existing_run = db_session.get(AgentRun, state.run_id)
+
+        if existing_run is not None:
+            existing_run.github_data = json.dumps(state.github_data, default=str) if state.github_data else None
+            existing_run.jira_data = json.dumps(state.jira_data, default=str) if state.jira_data else None
+            existing_run.analysis = json.dumps(state.analysis, default=str) if state.analysis else None
+            existing_run.briefing = json.dumps({"text": fallback_text, "blocks": blocks}, default=str)
+            existing_run.slack_channel = slack_channel
+            existing_run.slack_ts = slack_ts
+            existing_run.errors = json.dumps(new_errors) if new_errors else None
+            db_session.commit()
+        else:
+            agent_run = AgentRun(
+                workspace_id=workspace_id,
+                run_type=state.run_type or "ondemand",
+                status="completed",
+                query=state.query,
+                github_data=json.dumps(state.github_data, default=str) if state.github_data else None,
+                jira_data=json.dumps(state.jira_data, default=str) if state.jira_data else None,
+                analysis=json.dumps(state.analysis, default=str) if state.analysis else None,
+                briefing=json.dumps({"text": fallback_text, "blocks": blocks}, default=str),
+                slack_channel=slack_channel,
+                slack_ts=slack_ts,
+                errors=json.dumps(new_errors) if new_errors else None,
+                created_at=utc_now(),
+                completed_at=utc_now(),
+            )
+            db_session.add(agent_run)
+            db_session.commit()
 
         final_briefing: Dict[str, Any] = {
             "text": fallback_text,

@@ -78,3 +78,7 @@ class ActionError(TeamPulseError):
 class ConfigurationError(TeamPulseError):
     """Raised when configuration validation or environment variables are missing/invalid."""
 
+
+class PipelineConcurrencyError(TeamPulseError):
+    """Raised when a pipeline run is triggered while another run is already in progress for that workspace."""
+

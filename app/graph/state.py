@@ -28,6 +28,7 @@ class TeamPulseState(BaseModel):
     workspace_id: str = Field(default="default", description="Workspace ID")
     run_type: str = Field(default="morning", description="morning | evening | ondemand")
     query: Optional[str] = Field(default=None, description="Optional focus query")
+    run_id: Optional[int] = Field(default=None, description="Optional DB AgentRun ID")
 
     github_data: Union[List[PullRequest], Dict[str, Any], str] = Field(
         default_factory=list,

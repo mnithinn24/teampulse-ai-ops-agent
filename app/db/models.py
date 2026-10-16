@@ -3,7 +3,9 @@
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import (
+    Boolean,
     DateTime,
+    Float,
     Integer,
     String,
     Text,
@@ -89,6 +91,30 @@ class AgentRun(Base):
     )
     errors: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, doc="Serialized JSON list of errors encountered"
+    )
+    total_latency_ms: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True, doc="Total pipeline latency in ms"
+    )
+    collect_latency_ms: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True, doc="Collect node latency in ms"
+    )
+    analyze_latency_ms: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True, doc="Analyze node latency in ms"
+    )
+    act_latency_ms: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True, doc="Act node latency in ms"
+    )
+    model_used: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, doc="Model name used for analysis"
+    )
+    fallback_used: Mapped[Optional[bool]] = mapped_column(
+        Boolean, default=False, nullable=True, doc="Whether fallback model or rules were used"
+    )
+    items_collected: Mapped[Optional[int]] = mapped_column(
+        Integer, default=0, nullable=True, doc="Total work items collected"
+    )
+    flags_created: Mapped[Optional[int]] = mapped_column(
+        Integer, default=0, nullable=True, doc="Total priority flags raised in briefing"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utc_now, nullable=False
