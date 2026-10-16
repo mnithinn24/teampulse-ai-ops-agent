@@ -10,8 +10,14 @@ from app.config import get_settings
 from app.core.errors import AnalysisError
 from app.llm.gemini_client import GeminiClient, clean_json_text
 from app.llm.ollama_client import OllamaClient, strip_think_tags
-from app.llm.router import LLMRouter
+from app.llm.router import (
+    LLMRouter,
+    block_model,
+    clear_blocked_models,
+    is_model_blocked,
+)
 from app.llm.schemas import Analysis, PriorityFlag, QueryIntent
+
 
 
 class DummySchema(BaseModel):
@@ -315,3 +321,120 @@ async def test_router_fallback_order_gemini_main_to_fallback_to_ollama(
     assert result.provider == "ollama"
     assert result.data.patterns == ["Recovered via Ollama"]
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_gemini_429_not_retried_and_blocks_model(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A 429 RESOURCE_EXHAUSTED is not retried and blocks the model with parsed delay."""
+    clear_blocked_models()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
+    get_settings.cache_clear()
+
+    call_count = 0
+
+    class MockModels:
+        async def generate_content(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            from google.genai.errors import APIError
+            raise APIError(
+                code=429,
+                response_json={"error": "Resource has been exhausted (e.g. check quota). Please retry in 19h"},
+            )
+
+    class MockAio:
+        models = MockModels()
+
+    mock_sdk_client = MagicMock()
+    mock_sdk_client.aio = MockAio()
+
+    gemini_client = GeminiClient(
+        api_key="test-key",
+        model="gemini-3.6-flash",
+        client=mock_sdk_client,
+    )
+
+    # 1. Direct call to client: must fail immediately without retry (call_count == 1)
+    with pytest.raises(AnalysisError) as exc_info:
+        await gemini_client.generate_json("Prompt", DummySchema)
+
+    assert call_count == 1
+    assert "429" in str(exc_info.value) or "exhausted" in str(exc_info.value).lower()
+
+    # 2. Router route call: catches 429, blocks model, logs one short line
+    router = LLMRouter(gemini_client=gemini_client)
+    with pytest.raises(AnalysisError):
+        await router.route("Analyze work", schema=DummySchema, task_type="analysis")
+
+    # Assert model is blocked
+    assert is_model_blocked("gemini-3.6-flash") is True
+
+    # Assert short log line
+    warning_logs = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("gemini-3.6-flash quota exhausted, skipping for 19h" in log for log in warning_logs)
+
+    clear_blocked_models()
+
+
+@pytest.mark.asyncio
+async def test_blocked_model_is_skipped_and_routes_to_next_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked model is skipped and the router advances to the next candidate."""
+    clear_blocked_models()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-blocked-model")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "")
+    monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_MODEL", "ollama-available")
+    get_settings.cache_clear()
+
+    # Pre-block gemini-blocked-model
+    block_model("gemini-blocked-model", delay_seconds=3600.0)
+    assert is_model_blocked("gemini-blocked-model") is True
+
+    mock_gemini = AsyncMock(spec=GeminiClient)
+    mock_ollama = AsyncMock(spec=OllamaClient)
+    mock_ollama.check_health.return_value = True
+    mock_ollama.generate_json.return_value = DummySchema(name="from_ollama", score=10)
+
+    router = LLMRouter(ollama_client=mock_ollama, gemini_client=mock_gemini)
+    res = await router.route("Task", schema=DummySchema, task_type="analysis")
+
+    # Gemini must never have been called
+    mock_gemini.generate_json.assert_not_called()
+    # Ollama was invoked instead
+    assert res.provider == "ollama"
+    assert res.data.name == "from_ollama"
+
+    clear_blocked_models()
+
+
+@pytest.mark.asyncio
+async def test_router_log_lines_are_at_most_200_characters(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Provider error log lines at the router must be at most 200 characters."""
+    clear_blocked_models()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-error-model")
+    get_settings.cache_clear()
+
+    # Giant 5000 character error message
+    giant_error_message = "A" * 5000
+    mock_gemini = AsyncMock(spec=GeminiClient)
+    mock_gemini.generate_json.side_effect = Exception(giant_error_message)
+
+    router = LLMRouter(gemini_client=mock_gemini)
+
+    with pytest.raises(AnalysisError):
+        await router.route("Task", schema=DummySchema, task_type="analysis")
+
+    # Check all warning records emitted during routing
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) >= 1
+    for r in warning_records:
+        assert len(r.message) <= 200, f"Log line exceeded 200 characters ({len(r.message)}): {r.message}"
+

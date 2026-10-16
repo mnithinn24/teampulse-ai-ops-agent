@@ -108,7 +108,6 @@ class OllamaClient:
                 ) from exc
             raise
         except httpx.RequestError as exc:
-            logger.error("Network error communicating with Ollama at %s: %s", url, exc)
             raise AnalysisError(
                 message=f"Could not connect to Ollama at {self.base_url}: {exc}",
                 details={"url": url, "error": str(exc)},

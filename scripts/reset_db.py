@@ -34,6 +34,17 @@ def is_local_database_url(url: str) -> bool:
         return any(h in url_lower for h in ("localhost", "127.0.0.1", "::1"))
 
 
+def mask_database_url(url: str) -> str:
+    """Mask password in database URL for safe printing/logging."""
+    if not url:
+        return ""
+    try:
+        from sqlalchemy.engine import make_url
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        return url
+
+
 def reset_database(force: bool = False, database_url: str = None) -> int:
     """Drop and recreate all database tables.
 
@@ -49,16 +60,17 @@ def reset_database(force: bool = False, database_url: str = None) -> int:
     """
     settings = get_settings()
     url = database_url or settings.database_url
+    masked_url = mask_database_url(url)
 
     if not force:
         print("Refusing to reset database: --yes flag is required.")
         return 1
 
     if not is_local_database_url(url):
-        print(f"Refusing to reset non-local database: '{url}'. DATABASE_URL must point to localhost or sqlite.")
+        print(f"Refusing to reset non-local database: '{masked_url}'. DATABASE_URL must point to localhost or sqlite.")
         return 1
 
-    print(f"Resetting database at '{url}'...")
+    print(f"Resetting database at '{masked_url}'...")
     reset_db_connections()
     engine = get_engine(url)
     Base.metadata.drop_all(bind=engine)

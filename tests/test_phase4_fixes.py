@@ -60,6 +60,28 @@ def test_reset_db_refuses_non_local_url() -> None:
     assert is_local_database_url("mysql+pymysql://user:pass@remote.domain.com:3306/db") is False
 
 
+def test_reset_db_never_prints_password(capsys: pytest.CaptureFixture) -> None:
+    """reset_db must never print the database password in refusal or execution output."""
+    secret_pass = "super_secret_p@ssword!123"
+    remote_url = f"mysql+pymysql://root:{secret_pass}@remote-db.corp:3306/teampulse"
+
+    # 1. Refusal on remote database URL
+    code = reset_database(force=True, database_url=remote_url)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert secret_pass not in captured.out
+    assert secret_pass not in captured.err
+    assert "***" in captured.out
+
+    # 2. Local execution URL
+    local_url = "sqlite:///:memory:"
+    code_local = reset_database(force=True, database_url=local_url)
+    assert code_local == 0
+    captured_local = capsys.readouterr()
+    assert secret_pass not in captured_local.out
+
+
+
 # -------------------------------------------------------------------------
 # Test 2: Schema drift is detected
 # -------------------------------------------------------------------------

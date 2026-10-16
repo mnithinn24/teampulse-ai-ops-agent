@@ -1,9 +1,13 @@
 """Briefing, run status, and natural language query routes."""
 
+import asyncio
+from collections import defaultdict
 import hmac
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import math
+import time
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -13,10 +17,45 @@ from app.core.errors import PipelineConcurrencyError
 from app.db.database import get_db_session
 from app.db.models import AgentRun
 from app.graph.runner import trigger_pipeline_run
+from app.llm.router import get_all_models_status
+
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["briefing"])
+
+_api_key_query_timestamps: Dict[str, List[float]] = defaultdict(list)
+_rate_limiter_lock = asyncio.Lock()
+
+
+def reset_api_key_rate_limits() -> None:
+    """Clear in-memory query rate limits (useful for test isolation)."""
+    _api_key_query_timestamps.clear()
+
+
+async def check_api_key_rate_limit(api_key: str, limit_per_minute: int) -> Tuple[bool, int]:
+    """Sliding-window rate limiter per API key for queries.
+
+    Args:
+        api_key: API key string.
+        limit_per_minute: Max allowable queries in a 60-second window.
+
+    Returns:
+        Tuple of (is_allowed: bool, retry_after_seconds: int).
+    """
+    async with _rate_limiter_lock:
+        now = time.time()
+        cutoff = now - 60.0
+        active_ts = [ts for ts in _api_key_query_timestamps[api_key] if ts >= cutoff]
+        if len(active_ts) >= limit_per_minute:
+            _api_key_query_timestamps[api_key] = active_ts
+            oldest = active_ts[0]
+            retry_after = max(1, int(math.ceil(oldest + 60.0 - now)))
+            return False, retry_after
+
+        active_ts.append(now)
+        _api_key_query_timestamps[api_key] = active_ts
+        return True, 0
 
 
 def verify_admin_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> str:
@@ -131,14 +170,39 @@ async def get_run_details(run_id: int) -> Dict[str, Any]:
 @router.post("/query")
 async def execute_plain_language_query(
     body: PlainQueryRequest,
-    _: str = Depends(verify_admin_api_key),
+    api_key: str = Depends(verify_admin_api_key),
 ) -> Dict[str, Any]:
     """Answer a natural language question about current pull requests and issues.
 
     Requires X-API-Key header.
     Returns {answer, sources_used, item_ids, model_used, latency_ms}.
     """
+    settings = get_settings()
+    allowed, retry_after = await check_api_key_rate_limit(
+        api_key=api_key,
+        limit_per_minute=settings.query_rate_limit_per_minute,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded: maximum {settings.query_rate_limit_per_minute} questions per minute. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     return await handle_plain_language_query(
         question=body.question.strip(),
         workspace_id=body.workspace_id,
     )
+
+
+@router.get("/llm/status")
+async def get_llm_status(
+    _: str = Depends(verify_admin_api_key),
+) -> Dict[str, Any]:
+    """Get status of each configured model, whether it is blocked, and until when.
+
+    Requires X-API-Key header.
+    """
+    return get_all_models_status()
+
+

@@ -12,20 +12,21 @@ T = TypeVar("T")
 
 
 def is_retryable_llm_error(exc: Exception) -> bool:
-    """Determine if an LLM error is retryable (429 or 503).
+    """Determine if an LLM error is retryable (503 only).
 
     Specifically:
-    - Retries: 429 (Rate limit / Too Many Requests), 503 (Unavailable / Service Unavailable)
-    - Never retries: 400, 401, 403, 404 (fails immediately)
+    - Retries: 503 (Unavailable / Service Unavailable)
+    - Never retries: 429 (Resource Exhausted / Rate limit - handled by router blocking),
+      400, 401, 403, 404 (fails immediately)
     """
     # 1. Check explicit status_code or code attribute (numeric)
     status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
     if status_code is not None:
         try:
             code_int = int(status_code)
-            if code_int in (400, 401, 403, 404):
+            if code_int in (400, 401, 403, 404, 429):
                 return False
-            if code_int in (429, 503):
+            if code_int == 503:
                 return True
         except (ValueError, TypeError):
             pass
@@ -33,9 +34,9 @@ def is_retryable_llm_error(exc: Exception) -> bool:
     # 2. Check httpx response status if present
     if hasattr(exc, "response") and getattr(exc.response, "status_code", None) is not None:
         code_int = exc.response.status_code
-        if code_int in (400, 401, 403, 404):
+        if code_int in (400, 401, 403, 404, 429):
             return False
-        if code_int in (429, 503):
+        if code_int == 503:
             return True
 
     # 3. Check AnalysisError or IntegrationError details dict
@@ -44,9 +45,9 @@ def is_retryable_llm_error(exc: Exception) -> bool:
         if code_in_details is not None:
             try:
                 code_int = int(code_in_details)
-                if code_int in (400, 401, 403, 404):
+                if code_int in (400, 401, 403, 404, 429):
                     return False
-                if code_int in (429, 503):
+                if code_int == 503:
                     return True
             except (ValueError, TypeError):
                 pass
@@ -56,12 +57,15 @@ def is_retryable_llm_error(exc: Exception) -> bool:
         return is_retryable_llm_error(exc.__cause__)
 
     err_str = str(exc)
-    # Check non-retryable keywords in error string
+    # Check non-retryable keywords in error string (429 and RESOURCE_EXHAUSTED must NOT retry)
     non_retry_patterns = (
         "400",
         "401",
         "403",
         "404",
+        "429",
+        "RESOURCE_EXHAUSTED",
+        "Too Many Requests",
         "NOT_FOUND",
         "PERMISSION_DENIED",
         "BAD_REQUEST",
@@ -70,19 +74,17 @@ def is_retryable_llm_error(exc: Exception) -> bool:
     if any(pat in err_str for pat in non_retry_patterns):
         return False
 
-    # Check retryable keywords in error string
+    # Check retryable keywords in error string (503 / UNAVAILABLE only)
     retry_patterns = (
-        "429",
         "503",
         "UNAVAILABLE",
-        "RESOURCE_EXHAUSTED",
-        "Too Many Requests",
         "Service Unavailable",
     )
     if any(pat in err_str for pat in retry_patterns):
         return True
 
     return False
+
 
 
 def retry_async(

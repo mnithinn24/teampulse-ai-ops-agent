@@ -139,7 +139,6 @@ class GeminiClient:
                     ) from parse_exc
 
             except Exception as exc:
-                logger.error("Gemini generation failed for model %s: %s", active_model, exc)
                 if isinstance(exc, AnalysisError):
                     raise
                 code = getattr(exc, "code", None) or getattr(exc, "status_code", None)

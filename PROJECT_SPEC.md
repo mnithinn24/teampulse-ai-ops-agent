@@ -6,8 +6,8 @@ a prioritized briefing to Slack. Any write action (Jira comment or ticket)
 needs human approval through a Slack button.
 
 ## Stack
-Python 3.11, FastAPI, LangGraph, LangChain, Pydantic v2, pydantic-settings,
-httpx, PyGithub, slack-bolt (async), APScheduler, SQLite (SQLAlchemy),
+Python 3.14.6 (Python 3.14), FastAPI, LangGraph, LangChain, Pydantic v2, pydantic-settings,
+httpx, PyGithub, custom FastAPI Slack routes with HMAC verification (not slack-bolt), APScheduler, SQLite (SQLAlchemy),
 pytest, pytest-asyncio, Docker. Deploy target: GCP Cloud Run.
 
 ## LLM layer
@@ -20,7 +20,7 @@ pytest, pytest-asyncio, Docker. Deploy target: GCP Cloud Run.
 
 ## Graph (LangGraph), 3 nodes
 Collect -> Analyze -> Act
-- Collect: fetch GitHub PRs and Jira issues in parallel (asyncio.gather).
+- Collect: collect logic lives in app/graph/pipeline.py (fetch GitHub PRs and Jira issues in parallel via asyncio.gather).
   Compute age in days and a stale flag. If a source fails, mark it
   "unavailable" and continue.
 - Analyze: LLM finds patterns and priority flags. Skips items flagged
@@ -35,7 +35,7 @@ jira_data, analysis, priority_items, briefing, previous_flags, errors.
 ## Folder structure
 teampulse/
   app/
-    agents/ (collect.py, analyze.py, act.py)
+    agents/ (analyze.py, act.py; collect logic lives in app/graph/pipeline.py)
     graph/ (state.py, pipeline.py)
     integrations/ (github_client.py, jira_client.py, slack_client.py)
     llm/ (router.py, ollama_client.py, gemini_client.py, schemas.py)

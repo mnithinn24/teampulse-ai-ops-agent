@@ -177,6 +177,11 @@ class Settings(BaseSettings):
         default=300,
         description="Cache TTL in seconds for collected work items per workspace in the query path",
     )
+    query_llm_rephrase: bool = Field(
+        default=False,
+        description="Enable LLM rephrasing for query responses (default false; code-built template returned)",
+    )
+
 
     @field_validator("morning_briefing_time", "evening_briefing_time", mode="after")
     @classmethod

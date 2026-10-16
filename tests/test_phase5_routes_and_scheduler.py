@@ -27,6 +27,7 @@ from app.agents.query import (
     sanitize_and_ground_answer,
 )
 from app.api.main import app
+from app.api.routes.briefing import reset_api_key_rate_limits
 from app.api.routes.slack import check_user_rate_limit, reset_user_rate_limits
 from app.config import get_settings
 from app.core.errors import PipelineConcurrencyError
@@ -57,10 +58,13 @@ from tests.test_slack_interaction import generate_slack_headers
 
 @pytest.fixture(autouse=True)
 def _clean_query_cache():
-    """Ensure query cache is empty before and after each test."""
+    """Ensure query cache and rate limits are empty before and after each test."""
     clear_query_cache()
+    reset_api_key_rate_limits()
     yield
     clear_query_cache()
+    reset_api_key_rate_limits()
+
 
 
 # -----------------------------------------------------------------------------
@@ -833,11 +837,15 @@ async def test_out_of_scope_triggers_no_data_fetch_and_no_llm_call() -> None:
 
 @pytest.mark.asyncio
 async def test_llm_answer_with_wrong_number_is_replaced_by_template_answer(
-    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+    monkeypatch: pytest.MonkeyPatch,
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]],
 ) -> None:
     """An LLM answer with a wrong number is replaced by the template answer."""
+    monkeypatch.setenv("QUERY_LLM_REPHRASE", "true")
+    get_settings.cache_clear()
     prs, issues = real_data_fixture
     clear_query_cache()
+
 
     mock_router = AsyncMock(spec=LLMRouter)
     mock_router.get_candidates.return_value = [("gemini", "gemini-2.5-flash")]
@@ -920,9 +928,12 @@ async def test_query_cache_is_reused_within_ttl_and_refreshed_after_it(
 
 @pytest.mark.asyncio
 async def test_llm_timeout_still_returns_template_answer(
-    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]]
+    monkeypatch: pytest.MonkeyPatch,
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]],
 ) -> None:
     """An LLM timeout still returns the template answer."""
+    monkeypatch.setenv("QUERY_LLM_REPHRASE", "true")
+    get_settings.cache_clear()
     prs, issues = real_data_fixture
     clear_query_cache()
 
@@ -946,5 +957,148 @@ async def test_llm_timeout_still_returns_template_answer(
     assert "3300 days" in res["answer"]
     assert res["total_count"] == 88
     assert len(res["data"]) == 5
+    assert res["model_used"] == "code"
+
+
+@pytest.mark.asyncio
+async def test_rank_and_count_make_no_llm_call_when_query_llm_rephrase_is_false(
+    monkeypatch: pytest.MonkeyPatch,
+    real_data_fixture: Tuple[List[PullRequest], List[JiraIssue]],
+) -> None:
+    """Rank and count questions make no LLM call when QUERY_LLM_REPHRASE is false."""
+    monkeypatch.setenv("QUERY_LLM_REPHRASE", "false")
+    get_settings.cache_clear()
+    prs, issues = real_data_fixture
+    clear_query_cache()
+
+    mock_router = AsyncMock(spec=LLMRouter)
+    mock_gh = AsyncMock()
+    mock_gh.fetch_all_open_prs.return_value = prs
+
+    # 1. Rank question
+    res_rank = await handle_plain_language_query(
+        question="Which pull requests have been waiting the longest?",
+        workspace_id="test_no_rephrase_rank",
+        github_client=mock_gh,
+        router=mock_router,
+    )
+    assert res_rank["model_used"] == "code"
+    assert "Top 5 pull requests ranked by days since opened" in res_rank["answer"]
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+    # 2. Count question
+    res_count = await handle_plain_language_query(
+        question="How many stale pull requests are there?",
+        workspace_id="test_no_rephrase_count",
+        github_client=mock_gh,
+        router=mock_router,
+    )
+    assert res_count["model_used"] == "code"
+    assert res_count["answer"] == "There are 88 stale pull requests."
+    mock_router.get_candidates.assert_not_called()
+    mock_router.call_candidate.assert_not_called()
+
+
+def test_get_llm_status_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /llm/status requires X-API-Key and reports model blocked state."""
+    from app.llm.router import block_model, clear_blocked_models
+
+    clear_blocked_models()
+    monkeypatch.setenv("ADMIN_API_KEY", "llm_status_secret_key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    get_settings.cache_clear()
+
+    client = TestClient(app)
+
+    # 1. Missing auth -> 401
+    res_unauth = client.get("/llm/status")
+    assert res_unauth.status_code == 401
+
+    # 2. Authenticated call when no models are blocked
+    headers = {"X-API-Key": "llm_status_secret_key"}
+    res = client.get("/llm/status", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "models" in data
+    gemini_entry = next((m for m in data["models"] if m["model"] == "gemini-2.5-flash"), None)
+    assert gemini_entry is not None
+    assert gemini_entry["blocked"] is False
+    assert gemini_entry["blocked_until"] is None
+
+    # 3. Block a model and verify status updates
+    block_model("gemini-2.5-flash", delay_seconds=3600.0)
+    res_blocked = client.get("/llm/status", headers=headers)
+    assert res_blocked.status_code == 200
+    data_blocked = res_blocked.json()
+    gemini_blocked_entry = next((m for m in data_blocked["models"] if m["model"] == "gemini-2.5-flash"), None)
+    assert gemini_blocked_entry is not None
+    assert gemini_blocked_entry["blocked"] is True
+    assert gemini_blocked_entry["blocked_until"] is not None
+
+    clear_blocked_models()
+
+
+
+def test_http_query_rate_limit_sixth_call_returns_429_first_five_return_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 6th POST /query call within a minute returns 429 and the 1st to 5th return 200."""
+    monkeypatch.setenv("ADMIN_API_KEY", "test_query_key_secret")
+    monkeypatch.setenv("QUERY_RATE_LIMIT_PER_MINUTE", "5")
+    get_settings.cache_clear()
+    reset_api_key_rate_limits()
+
+    client = TestClient(app)
+    headers = {"X-API-Key": "test_query_key_secret"}
+    body = {"question": "How many stale pull requests are there?", "workspace_id": "default"}
+
+    with patch(
+        "app.api.routes.briefing.handle_plain_language_query",
+        return_value={"answer": "ok", "sources_used": [], "item_ids": []},
+    ):
+        # Calls 1 to 5 must succeed with 200
+        for i in range(5):
+            res = client.post("/query", json=body, headers=headers)
+            assert res.status_code == 200, f"Call #{i+1} failed with status {res.status_code}"
+
+        # 6th call within the minute must return 429
+        res_6 = client.post("/query", json=body, headers=headers)
+        assert res_6.status_code == 429
+        assert "Retry-After" in res_6.headers
+        retry_after = int(res_6.headers["Retry-After"])
+        assert retry_after >= 1
+
+
+def test_http_query_rate_limit_does_not_affect_health(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exceeding the rate limit on /query does not affect GET /health."""
+    monkeypatch.setenv("ADMIN_API_KEY", "test_query_key_secret_2")
+    monkeypatch.setenv("QUERY_RATE_LIMIT_PER_MINUTE", "5")
+    get_settings.cache_clear()
+    reset_api_key_rate_limits()
+
+    client = TestClient(app)
+    headers = {"X-API-Key": "test_query_key_secret_2"}
+    body = {"question": "How many stale pull requests are there?", "workspace_id": "default"}
+
+    with patch(
+        "app.api.routes.briefing.handle_plain_language_query",
+        return_value={"answer": "ok", "sources_used": [], "item_ids": []},
+    ):
+        # Exhaust rate limit
+        for _ in range(5):
+            client.post("/query", json=body, headers=headers)
+
+        res_blocked = client.post("/query", json=body, headers=headers)
+        assert res_blocked.status_code == 429
+
+    # /health must still succeed
+    res_health = client.get("/health")
+    assert res_health.status_code == 200
+    assert res_health.json()["status"] == "ok"
+
+
 
 

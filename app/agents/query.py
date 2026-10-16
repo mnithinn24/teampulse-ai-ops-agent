@@ -733,10 +733,10 @@ async def handle_plain_language_query(
         )
 
         final_answer = template_answer
-        model_used = "template_code"
+        model_used = "code"
 
-        # LLM rephrasing is optional; verify all numbers and IDs against computed result
-        if template_answer and "not in the collected data" not in template_answer:
+        # LLM rephrasing is optional and only attempted if QUERY_LLM_REPHRASE is enabled
+        if settings.query_llm_rephrase and template_answer and "not in the collected data" not in template_answer:
             try:
                 candidates = await llm_router.get_candidates(task_type="analysis")
                 if candidates:
@@ -762,11 +762,12 @@ async def handle_plain_language_query(
                     else:
                         logger.info("LLM answer failed verification; reverting to template answer.")
                         final_answer = template_answer
-                        model_used = "template_verified"
+                        model_used = "code"
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.warning("LLM rephrase failed or timed out (%s). Using template answer.", exc)
                 final_answer = template_answer
-                model_used = "template_fallback"
+                model_used = "code"
+
 
         latency_ms = (time.perf_counter() - t_start) * 1000
         return {
