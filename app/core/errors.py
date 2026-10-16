@@ -37,11 +37,13 @@ def format_log_error(exc: Any, max_len: int = 200) -> str:
 
     # Strip details dict patterns and response bodies
     msg = re.sub(r"\(details:.*?\)", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"(?:with\s+)?details\s*[:=]\s*\{.*?\}", "", msg, flags=re.DOTALL | re.IGNORECASE)
     msg = re.sub(r"details=\{.*?\}", "", msg, flags=re.DOTALL)
     msg = re.sub(r"'details':\s*\{.*?\}", "", msg, flags=re.DOTALL)
     msg = re.sub(r"'raw_text':\s*'.*?'", "", msg, flags=re.DOTALL)
     msg = re.sub(r"'raw_response':\s*\{.*?\}", "", msg, flags=re.DOTALL)
     msg = re.sub(r"'response_json':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"(?:token|secret|password|key)\s*[:=]\s*['\"]?[^\s,'\"\}]+['\"]?", "[MASKED]", msg, flags=re.IGNORECASE)
 
     cleaned = msg.replace("\n", " ").replace("\r", " ").strip()
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-")

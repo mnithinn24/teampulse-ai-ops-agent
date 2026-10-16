@@ -1,0 +1,558 @@
+[
+  {
+    "id": "QR-01",
+    "category": "query_rank",
+    "input": { "query": "Which pull requests have been waiting the longest?" },
+    "expected": {
+      "top_number": 88,
+      "top_age": 3300,
+      "contains": ["#88", "3300"]
+    },
+    "guards_against": "Ranking previously ran only over the first 15 items capped by MAX_ITEMS_IN_PROMPT."
+  },
+  {
+    "id": "QR-02",
+    "category": "query_rank",
+    "input": { "query": "Show me the top 3 oldest pull requests" },
+    "expected": {
+      "contains": ["#88", "#87", "#86"],
+      "item_count": 3
+    },
+    "guards_against": "Limit parameter in ranking was ignored and defaulted to prompt truncation limit."
+  },
+  {
+    "id": "QR-03",
+    "category": "query_rank",
+    "input": { "query": "Top 5 oldest PRs waiting for review" },
+    "expected": {
+      "contains": ["#88", "#87", "#86", "#85", "#84"],
+      "item_count": 5
+    },
+    "guards_against": "Sorting order was ascending instead of descending for oldest items."
+  },
+  {
+    "id": "QR-04",
+    "category": "query_rank",
+    "input": { "query": "Rank pull requests by inactivity" },
+    "expected": {
+      "contains": ["#88"],
+      "metric": "last_commit_days"
+    },
+    "guards_against": "Ranking by last activity confused age_days with last_commit_days."
+  },
+  {
+    "id": "QR-05",
+    "category": "query_rank",
+    "input": { "query": "Which pull request is the single oldest?" },
+    "expected": {
+      "contains": ["#88", "3300"]
+    },
+    "guards_against": "Single-item rank queries returned arbitrary items instead of the true extreme."
+  },
+  {
+    "id": "QC-01",
+    "category": "query_count",
+    "input": { "query": "How many stale pull requests are there?" },
+    "expected": {
+      "count": 88,
+      "contains": ["88"]
+    },
+    "guards_against": "Stale PR count returned 15 because the LLM prompt list was pre-sliced to 15."
+  },
+  {
+    "id": "QC-02",
+    "category": "query_count",
+    "input": { "query": "How many open pull requests are in the repo?" },
+    "expected": {
+      "count": 88,
+      "contains": ["88"]
+    },
+    "guards_against": "Counting open PRs returned stale item count rather than total collected PRs."
+  },
+  {
+    "id": "QC-03",
+    "category": "query_count",
+    "input": { "query": "How many pull requests by alice?" },
+    "expected": {
+      "count": 15,
+      "contains": ["15"]
+    },
+    "guards_against": "Author filtering failed or missed items outside the first page/prompt slice."
+  },
+  {
+    "id": "QC-04",
+    "category": "query_count",
+    "input": { "query": "How many pull requests does bob have?" },
+    "expected": {
+      "count": 15,
+      "contains": ["15"]
+    },
+    "guards_against": "Author name matching was case-sensitive or truncated."
+  },
+  {
+    "id": "QC-05",
+    "category": "query_count",
+    "input": { "query": "How many Jira tickets are collected?" },
+    "expected": {
+      "count": 3,
+      "contains": ["3"]
+    },
+    "guards_against": "Counting Jira tickets returned 0 when all tickets were fresh."
+  },
+  {
+    "id": "QC-06",
+    "category": "query_count",
+    "input": { "query": "How many stale Jira tickets are there?" },
+    "expected": {
+      "count": 0,
+      "contains": ["0"]
+    },
+    "guards_against": "Reported stale tickets even when all Jira tickets are fresh."
+  },
+  {
+    "id": "QL-01",
+    "category": "query_lookup",
+    "input": { "query": "What is KAN-1?" },
+    "expected": {
+      "found": true,
+      "contains": ["KAN-1", "Setup database connection retry"]
+    },
+    "guards_against": "Jira ticket lookup failed to inspect fresh issues not present in prompt."
+  },
+  {
+    "id": "QL-02",
+    "category": "query_lookup",
+    "input": { "query": "Tell me about ticket KAN-2" },
+    "expected": {
+      "found": true,
+      "contains": ["KAN-2", "Investigate memory spike in scheduler"]
+    },
+    "guards_against": "Key lookup did not parse key from natural language questions."
+  },
+  {
+    "id": "QL-03",
+    "category": "query_lookup",
+    "input": { "query": "Status of pull request #1" },
+    "expected": {
+      "found": true,
+      "contains": ["#1", "20"]
+    },
+    "guards_against": "PR number lookup failed on leading '#' symbol."
+  },
+  {
+    "id": "QL-04",
+    "category": "query_lookup",
+    "input": { "query": "Tell me about KAN-42" },
+    "expected": {
+      "found": false,
+      "contains": ["KAN-42 is not in the collected data"]
+    },
+    "guards_against": "Missing Jira tickets triggered expensive hallucinating LLM calls instead of code response."
+  },
+  {
+    "id": "QL-05",
+    "category": "query_lookup",
+    "input": { "query": "What is pull request #9999?" },
+    "expected": {
+      "found": false,
+      "contains": ["not in the collected data"]
+    },
+    "guards_against": "Missing PR numbers caused model hallucination or unhandled exceptions."
+  },
+  {
+    "id": "QO-01",
+    "category": "query_out_of_scope",
+    "input": { "query": "What is the weather in Tokyo today?" },
+    "expected": {
+      "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+    },
+    "guards_against": "Weather questions triggered LLM calls and attempted data source lookups."
+  },
+  {
+    "id": "QO-02",
+    "category": "query_out_of_scope",
+    "input": { "query": "Tell me a funny joke about python programming." },
+    "expected": {
+      "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+    },
+    "guards_against": "Joke requests leaked conversational LLM tokens instead of fast rejection."
+  },
+  {
+    "id": "QO-03",
+    "category": "query_out_of_scope",
+    "input": { "query": "Who was the first president of the United States?" },
+    "expected": {
+      "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+    },
+    "guards_against": "General knowledge questions bypassed ops scope boundaries."
+  },
+  {
+    "id": "QO-04",
+    "category": "query_out_of_scope",
+    "input": { "query": "   " },
+    "expected": {
+      "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+    },
+    "guards_against": "Empty whitespace query raised uncaught exception or malformed intent."
+  },
+  {
+    "id": "QO-05",
+    "category": "query_out_of_scope",
+    "input": {
+      "query": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+    },
+    "expected": {
+      "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+    },
+    "guards_against": "Long gibberish text caused prompt injection or high token consumption."
+  },
+  {
+    "id": "SD-01",
+    "category": "stale_detection",
+    "input": { "item_type": "pr", "age_days": 6, "last_commit_days": 6 },
+    "expected": { "is_stale": false },
+    "guards_against": "PR 1 day below threshold (6d < 7d) was erroneously marked stale."
+  },
+  {
+    "id": "SD-02",
+    "category": "stale_detection",
+    "input": { "item_type": "pr", "age_days": 7, "last_commit_days": 7 },
+    "expected": { "is_stale": true },
+    "guards_against": "PR exactly at threshold (7d == 7d) was treated as non-stale with strict '>' instead of '>='."
+  },
+  {
+    "id": "SD-03",
+    "category": "stale_detection",
+    "input": { "item_type": "pr", "age_days": 8, "last_commit_days": 8 },
+    "expected": { "is_stale": true },
+    "guards_against": "PR 1 day above threshold (8d > 7d) failed to be flagged as stale."
+  },
+  {
+    "id": "SD-04",
+    "category": "stale_detection",
+    "input": { "item_type": "ticket", "age_days": 20, "days_since_update": 13 },
+    "expected": { "is_stale": false },
+    "guards_against": "Jira ticket 1 day below threshold (13d < 14d) was erroneously marked stale."
+  },
+  {
+    "id": "SD-05",
+    "category": "stale_detection",
+    "input": { "item_type": "ticket", "age_days": 20, "days_since_update": 14 },
+    "expected": { "is_stale": true },
+    "guards_against": "Jira ticket exactly at threshold (14d == 14d) was not recognized as stale."
+  },
+  {
+    "id": "SD-06",
+    "category": "stale_detection",
+    "input": { "item_type": "ticket", "age_days": 20, "days_since_update": 15 },
+    "expected": { "is_stale": true },
+    "guards_against": "Jira ticket 1 day above threshold (15d > 14d) was not flagged as stale."
+  },
+  {
+    "id": "GR-01",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "mnithinn24/teampulse-ai-ops-agent#9999",
+        "title": "Invented PR Title",
+        "reason": "Made-up reason",
+        "urgency": "urgent",
+        "suggested_action": "Review"
+      }
+    },
+    "expected": {
+      "blocked": true,
+      "survives_grounding": false
+    },
+    "guards_against": "Hallucinated PR IDs invented by LLM leaking into the briefing."
+  },
+  {
+    "id": "GR-02",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "KAN-999",
+        "title": "Invented Jira Ticket",
+        "reason": "Hallucinated issue",
+        "urgency": "critical",
+        "suggested_action": "Triage"
+      }
+    },
+    "expected": {
+      "blocked": true,
+      "survives_grounding": false
+    },
+    "guards_against": "Hallucinated Jira keys invented by LLM leaking into the briefing."
+  },
+  {
+    "id": "GR-03",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "mnithinn24/teampulse-ai-ops-agent#1",
+        "title": "PR 1",
+        "reason": "Open for 999 days and neglected",
+        "urgency": "watch",
+        "suggested_action": "Ping author",
+        "evidence_age_days": 999,
+        "evidence_author": "wrong_author"
+      }
+    },
+    "expected": {
+      "blocked": false,
+      "survives_grounding": true,
+      "grounded_age": 20,
+      "grounded_author": "alice"
+    },
+    "guards_against": "LLM hallucinating fake age or author numbers instead of using factual collected evidence."
+  },
+  {
+    "id": "GR-04",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "mnithinn24/teampulse-ai-ops-agent#1",
+        "title": "PR 1",
+        "reason": "Developer broke production build 3 times and refused to reply",
+        "urgency": "watch",
+        "suggested_action": "Close PR"
+      }
+    },
+    "expected": {
+      "blocked": false,
+      "reason_replaced_by_code": true,
+      "forbidden_text": ["broke production", "refused to reply"]
+    },
+    "guards_against": "Model inventing inflammatory unsupported allegations in reason text."
+  },
+  {
+    "id": "GR-05",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "#88",
+        "title": "Synthetic PR #88",
+        "reason": "Stale",
+        "urgency": "watch",
+        "suggested_action": "Review"
+      }
+    },
+    "expected": {
+      "normalized_id": "mnithinn24/teampulse-ai-ops-agent#88",
+      "survives_grounding": true
+    },
+    "guards_against": "Alternate PR reference format like #88 rejected instead of normalized to canonical ID."
+  },
+  {
+    "id": "GR-06",
+    "category": "grounding",
+    "input": {
+      "simulated_flag": {
+        "item_id": "KAN-1",
+        "title": "Database retry issue",
+        "reason": "Open for 3 days",
+        "urgency": "urgent",
+        "suggested_action": "Comment"
+      }
+    },
+    "expected": {
+      "normalized_id": "KAN-1",
+      "survives_grounding": true
+    },
+    "guards_against": "Valid Jira issue flagged by LLM was erroneously dropped during grounding."
+  },
+  {
+    "id": "FH-01",
+    "category": "failure_handling",
+    "input": {
+      "github_status": "unavailable",
+      "github_error": "rate limit exceeded",
+      "jira_status": "ok"
+    },
+    "expected": {
+      "starts_with_warning": true,
+      "warning_contains": "WARNING: GitHub data unavailable",
+      "no_all_clear": true,
+      "unknown_pr_count": true
+    },
+    "guards_against": "GitHub failure made briefing show 'All clear' and '0 open PRs'."
+  },
+  {
+    "id": "FH-02",
+    "category": "failure_handling",
+    "input": {
+      "github_status": "ok",
+      "jira_status": "unavailable",
+      "jira_error": "auth failed: 401 Unauthorized"
+    },
+    "expected": {
+      "starts_with_warning": true,
+      "warning_contains": "WARNING: Jira data unavailable",
+      "no_all_clear": true,
+      "unknown_ticket_count": true
+    },
+    "guards_against": "Jira failure made briefing show 'All clear' and '0 stale tickets'."
+  },
+  {
+    "id": "FH-03",
+    "category": "failure_handling",
+    "input": {
+      "github_status": "unavailable",
+      "github_error": "Network timeout",
+      "jira_status": "unavailable",
+      "jira_error": "Service 503 unavailable"
+    },
+    "expected": {
+      "starts_with_warning": true,
+      "warning_contains": ["WARNING: GitHub data unavailable", "WARNING: Jira data unavailable"],
+      "no_all_clear": true
+    },
+    "guards_against": "Simultaneous data source failure displayed All clear with 0 counts across both sources."
+  },
+  {
+    "id": "FH-04",
+    "category": "failure_handling",
+    "input": {
+      "github_status": "unavailable",
+      "github_error": "rate limit reset at 15:30 IST",
+      "jira_status": "ok"
+    },
+    "expected": {
+      "warning_contains": "reset at 15:30 IST",
+      "no_all_clear": true
+    },
+    "guards_against": "Rate limit reset time was missing or displayed in wrong timezone."
+  },
+  {
+    "id": "FH-05",
+    "category": "failure_handling",
+    "input": {
+      "github_status": "unavailable",
+      "github_error": "HTTP 403 Forbidden with details: {secret_token: 12345}",
+      "jira_status": "ok"
+    },
+    "expected": {
+      "warning_contains": "HTTP 403 Forbidden",
+      "forbidden_in_warning": ["details", "secret_token"]
+    },
+    "guards_against": "Raw exception details and internal dictionaries leaking into user-visible WARNING text."
+  },
+  {
+    "id": "BW-01",
+    "category": "briefing_wording",
+    "input": {
+      "flags_count": 2,
+      "stale_prs": 5,
+      "stale_tickets": 2,
+      "all_sources_ok": true
+    },
+    "expected": {
+      "shows_priority_headers": true,
+      "no_all_clear": true
+    },
+    "guards_against": "New flags present in briefing still showed 'All clear' header."
+  },
+  {
+    "id": "BW-02",
+    "category": "briefing_wording",
+    "input": {
+      "flags_count": 0,
+      "stale_prs": 3,
+      "stale_tickets": 2,
+      "all_sources_ok": true
+    },
+    "expected": {
+      "exact_sentence": "No new items since the last briefing. 3 PRs and 2 tickets are still stale.",
+      "no_all_clear": true
+    },
+    "guards_against": "0 new flags with ongoing stale items said 'All clear' instead of showing persistent stale count."
+  },
+  {
+    "id": "BW-03",
+    "category": "briefing_wording",
+    "input": {
+      "flags_count": 0,
+      "stale_prs": 0,
+      "stale_tickets": 0,
+      "all_sources_ok": true
+    },
+    "expected": {
+      "contains_all_clear": true
+    },
+    "guards_against": "Truly all-clear state (0 stale items across all healthy sources) failed to show All clear."
+  },
+  {
+    "id": "BW-04",
+    "category": "briefing_wording",
+    "input": {
+      "flags_count": 0,
+      "stale_prs": 0,
+      "stale_tickets": 0,
+      "all_sources_ok": false,
+      "failed_source": "github"
+    },
+    "expected": {
+      "no_all_clear": true,
+      "starts_with_warning": true
+    },
+    "guards_against": "Empty flags due to a failed source mistakenly showed 'All clear'."
+  },
+  {
+    "id": "BW-05",
+    "category": "briefing_wording",
+    "input": {
+      "flags_count": 0,
+      "stale_prs": 1,
+      "stale_tickets": 0,
+      "all_sources_ok": true
+    },
+    "expected": {
+      "exact_sentence": "No new items since the last briefing. 1 PRs and 0 tickets are still stale.",
+      "no_all_clear": true
+    },
+    "guards_against": "Single stale PR without stale tickets incorrectly triggered All clear."
+  },
+  {
+    "id": "AS-01",
+    "category": "action_safety",
+    "input": { "action": "second_approval", "target_id": "KAN-10" },
+    "expected": { "executed_calls": 1, "is_idempotent": true },
+    "guards_against": "Double-clicking Slack button or network callback retry created duplicate Jira comments."
+  },
+  {
+    "id": "AS-02",
+    "category": "action_safety",
+    "input": { "action": "duplicate_ticket_check", "pr_canonical_id": "owner/repo#42", "existing_key": "KAN-42" },
+    "expected": {
+      "created_issue": false,
+      "reply_text": "Already tracked as KAN-42",
+      "action_status": "skipped_duplicate"
+    },
+    "guards_against": "Repeated approvals of the same stale PR created multiple duplicate Jira triage tickets."
+  },
+  {
+    "id": "AS-03",
+    "category": "action_safety",
+    "input": { "action": "dry_run_execution", "target_id": "KAN-20", "dry_run": true },
+    "expected": {
+      "created_issue": false,
+      "contains_dry_run_tag": true,
+      "action_status": "dry_run"
+    },
+    "guards_against": "Dry run mode called external APIs instead of purely logging intended actions."
+  },
+  {
+    "id": "AS-04",
+    "category": "action_safety",
+    "input": { "action": "verify_signature", "forged": true },
+    "expected": { "is_valid": false },
+    "guards_against": "Forged or tampered Slack payloads accepted by webhook endpoint."
+  },
+  {
+    "id": "AS-05",
+    "category": "action_safety",
+    "input": { "action": "verify_signature", "timestamp_drift_seconds": 360 },
+    "expected": { "is_valid": false },
+    "guards_against": "Replay attacks with expired Slack timestamps (> 5 min) accepted."
+  }
+]

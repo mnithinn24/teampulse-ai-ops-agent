@@ -297,3 +297,29 @@ def test_briefing_all_clear_only_when_all_sources_succeeded() -> None:
     assert not briefing_ok["text"].startswith("WARNING:")
 
 
+def test_briefing_warning_never_leaks_details_or_secret_token() -> None:
+    """Requirement: failure WARNING text in briefing never leaks details, bodies, dicts, or tokens."""
+    now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+    state = TeamPulseState(
+        workspace_id="test",
+        github_data={
+            "status": "unavailable",
+            "error": "HTTP 403 Forbidden with details: {secret_token: 12345}",
+        },
+        jira_data=[JiraIssue(key="KAN-1", title="Issue", status="Done", age_days=1, days_since_update=1, is_stale=False)],
+        errors=["GitHub collection failed: HTTP 403 Forbidden with details: {secret_token: 12345}"],
+    )
+    briefing = build_slack_briefing(state=state, flags_with_db=[], now=now)
+    text = briefing["text"]
+    blocks_str = str(briefing["blocks"])
+
+    # Must contain safe short reason
+    assert "HTTP 403 Forbidden" in text
+    # Must fail if warning contains 'details' or 'secret_token'
+    assert "details" not in text.lower(), f"Found 'details' in briefing text: {text}"
+    assert "secret_token" not in text, f"Found 'secret_token' in briefing text: {text}"
+    assert "details" not in blocks_str.lower(), f"Found 'details' in briefing blocks: {blocks_str}"
+    assert "secret_token" not in blocks_str, f"Found 'secret_token' in briefing blocks: {blocks_str}"
+
+
+

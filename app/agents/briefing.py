@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.config import get_settings
 from app.core.constants import URGENCY_CRITICAL, URGENCY_URGENT, URGENCY_WATCH
+from app.core.errors import format_log_error
 from app.graph.state import TeamPulseState
 from app.llm.schemas import Analysis, PriorityFlag
 
@@ -90,16 +91,41 @@ def extract_totals(state: TeamPulseState) -> Tuple[int, int, int]:
 
 
 def clean_short_reason(reason: Optional[str], max_len: int = 80) -> str:
-    """Format and clean a short reason string of at most max_len characters."""
+    """Format and clean a short reason string of at most max_len characters.
+
+    Extracts a safe short status reason (e.g. 'HTTP 403 Forbidden').
+    Never includes exception bodies, dicts, tokens, or the word 'details'.
+    Logs the full error via the existing secret-masking logger.
+    """
     if not reason:
         return "error during fetch"
+
+    # Log full error with existing secret-masking logger, not in Slack text
+    logger.warning("Data source error encountered: %s", format_log_error(reason))
+
     msg = str(reason)
-    msg = re.sub(r"\(details:.*?\)", "", msg, flags=re.DOTALL)
-    msg = re.sub(r"details=\{.*?\}", "", msg, flags=re.DOTALL)
-    msg = re.sub(r"'details':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+
+    # 1. Strip raw dictionaries / JSON structures / curly or square brackets
+    msg = re.sub(r"\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"\[.*?\]", "", msg, flags=re.DOTALL)
+
+    # 2. Strip "with details: ...", "(details: ...)", "details: ...", "details=..."
+    msg = re.sub(r"\s*\(details:.*?\)", "", msg, flags=re.IGNORECASE | re.DOTALL)
+    msg = re.sub(r"\s*\bwith\s+details\b.*$", "", msg, flags=re.IGNORECASE | re.DOTALL)
+    msg = re.sub(r"\s*\bdetails\s*[:=].*$", "", msg, flags=re.IGNORECASE | re.DOTALL)
+
+    # 3. Strip raw response fields or HTTP payload patterns
     msg = re.sub(r"'raw_text':\s*'.*?'", "", msg, flags=re.DOTALL)
-    msg = re.sub(r"'raw_response':\s*\{.*?\}", "", msg, flags=re.DOTALL)
-    msg = re.sub(r"'response_json':\s*\{.*?\}", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'raw_response':.*$", "", msg, flags=re.DOTALL)
+    msg = re.sub(r"'response_json':.*$", "", msg, flags=re.DOTALL)
+
+    # 4. Remove any remaining occurrences of "details" or token/secret identifiers
+    msg = re.sub(r"\bdetails\b", "", msg, flags=re.IGNORECASE)
+    msg = re.sub(r"\bsecret_token\b.*", "", msg, flags=re.IGNORECASE)
+    msg = re.sub(r"\b(?:api_key|secret|token)\b.*", "", msg, flags=re.IGNORECASE)
+
+    # 5. Remove any leftover braces/brackets
+    msg = re.sub(r"[\{\}\[\]]", "", msg)
 
     cleaned = msg.replace("\n", " ").replace("\r", " ").strip()
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-")

@@ -1,0 +1,874 @@
+{
+  "timestamp": "2026-10-16T10:08:02Z",
+  "git_commit": "1d4cf0d55a9e4564e1b2d7a4cdb878a9c6091d68",
+  "python_version": "3.14.6",
+  "deterministic_eval": {
+    "total_cases": 48,
+    "passed_cases": 45,
+    "failed_cases": 3,
+    "overall_accuracy": 0.9375,
+    "p50_latency_ms": 0.9,
+    "p95_latency_ms": 66.32,
+    "mean_latency_ms": 117.15,
+    "category_metrics": {
+      "action_safety": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 4.34,
+        "p50_ms": 0.4,
+        "p95_ms": 16.0
+      },
+      "briefing_wording": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 0.1,
+        "p50_ms": 0.05,
+        "p95_ms": 0.22
+      },
+      "failure_handling": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 0.54,
+        "p50_ms": 0.29,
+        "p95_ms": 1.3
+      },
+      "grounding": {
+        "total": 6,
+        "passed": 6,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 0.08,
+        "p50_ms": 0.07,
+        "p95_ms": 0.12
+      },
+      "query_count": {
+        "total": 6,
+        "passed": 4,
+        "failed": 2,
+        "accuracy": 0.6667,
+        "mean_ms": 49.43,
+        "p50_ms": 48.63,
+        "p95_ms": 68.13
+      },
+      "query_lookup": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 43.06,
+        "p50_ms": 42.27,
+        "p95_ms": 44.58
+      },
+      "query_out_of_scope": {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 35.76,
+        "p50_ms": 36.34,
+        "p95_ms": 38.66
+      },
+      "query_rank": {
+        "total": 5,
+        "passed": 4,
+        "failed": 1,
+        "accuracy": 0.8,
+        "mean_ms": 981.46,
+        "p50_ms": 53.09,
+        "p95_ms": 3769.17
+      },
+      "stale_detection": {
+        "total": 6,
+        "passed": 6,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.01
+      }
+    },
+    "grounding_summary": {
+      "label": "simulated LLM output",
+      "invented_ids_injected": 2,
+      "invented_ids_blocked": 2
+    },
+    "results": [
+      {
+        "id": "QR-01",
+        "category": "query_rank",
+        "passed": true,
+        "latency_ms": 91.59,
+        "expected": {
+          "top_number": 88,
+          "top_age": 3300,
+          "contains": [
+            "#88",
+            "3300"
+          ]
+        },
+        "actual": "Top 5 pull requests ranked by days since opened (total: 88):\n1. mnithinn24/teampulse-ai-ops-agent#88: Synthetic pull request #88 addressing ops task (3300 days, author: dave)\n2. mnithinn24/teampulse-ai-ops-agent#87: Synthetic pull request #87 addressing ops task (3262 days, author: carol)\n3. mnithinn24/teampulse-ai-ops-agent#86: Synthetic pull request #86 addressing ops task (3225 days, author: bob)\n4. mnithinn24/teampulse-ai-ops-agent#85: Synthetic pull request #85 addressing ops task (3187 days, author: alice)\n5. mnithinn24/teampulse-ai-ops-agent#84: Synthetic pull request #84 addressing ops task (3149 days, author: frank)",
+        "guards_against": "Ranking previously ran only over the first 15 items capped by MAX_ITEMS_IN_PROMPT.",
+        "error": null
+      },
+      {
+        "id": "QR-02",
+        "category": "query_rank",
+        "passed": true,
+        "latency_ms": 39.17,
+        "expected": {
+          "contains": [
+            "#88",
+            "#87",
+            "#86"
+          ],
+          "item_count": 3
+        },
+        "actual": "Top 3 pull requests ranked by days since opened (total: 88):\n1. mnithinn24/teampulse-ai-ops-agent#88: Synthetic pull request #88 addressing ops task (3300 days, author: dave)\n2. mnithinn24/teampulse-ai-ops-agent#87: Synthetic pull request #87 addressing ops task (3262 days, author: carol)\n3. mnithinn24/teampulse-ai-ops-agent#86: Synthetic pull request #86 addressing ops task (3225 days, author: bob)",
+        "guards_against": "Limit parameter in ranking was ignored and defaulted to prompt truncation limit.",
+        "error": null
+      },
+      {
+        "id": "QR-03",
+        "category": "query_rank",
+        "passed": true,
+        "latency_ms": 34.87,
+        "expected": {
+          "contains": [
+            "#88",
+            "#87",
+            "#86",
+            "#85",
+            "#84"
+          ],
+          "item_count": 5
+        },
+        "actual": "Top 5 pull requests ranked by days since opened (total: 88):\n1. mnithinn24/teampulse-ai-ops-agent#88: Synthetic pull request #88 addressing ops task (3300 days, author: dave)\n2. mnithinn24/teampulse-ai-ops-agent#87: Synthetic pull request #87 addressing ops task (3262 days, author: carol)\n3. mnithinn24/teampulse-ai-ops-agent#86: Synthetic pull request #86 addressing ops task (3225 days, author: bob)\n4. mnithinn24/teampulse-ai-ops-agent#85: Synthetic pull request #85 addressing ops task (3187 days, author: alice)\n5. mnithinn24/teampulse-ai-ops-agent#84: Synthetic pull request #84 addressing ops task (3149 days, author: frank)",
+        "guards_against": "Sorting order was ascending instead of descending for oldest items.",
+        "error": null
+      },
+      {
+        "id": "QR-04",
+        "category": "query_rank",
+        "passed": false,
+        "latency_ms": 4688.56,
+        "expected": {
+          "contains": [
+            "#88"
+          ],
+          "metric": "last_commit_days"
+        },
+        "actual": "Found matching items: mnithinn24/teampulse-ai-ops-agent#1: Synthetic pull request #1 addressing ops task; mnithinn24/teampulse-ai-ops-agent#2: Synthetic pull request #2 addressing ops task; mnithinn24/teampulse-ai-ops-agent#3: Synthetic pull request #3 addressing ops task",
+        "guards_against": "Ranking by last activity confused age_days with last_commit_days.",
+        "error": null
+      },
+      {
+        "id": "QR-05",
+        "category": "query_rank",
+        "passed": true,
+        "latency_ms": 53.09,
+        "expected": {
+          "contains": [
+            "#88",
+            "3300"
+          ]
+        },
+        "actual": "Top 5 pull requests ranked by days since opened (total: 88):\n1. mnithinn24/teampulse-ai-ops-agent#88: Synthetic pull request #88 addressing ops task (3300 days, author: dave)\n2. mnithinn24/teampulse-ai-ops-agent#87: Synthetic pull request #87 addressing ops task (3262 days, author: carol)\n3. mnithinn24/teampulse-ai-ops-agent#86: Synthetic pull request #86 addressing ops task (3225 days, author: bob)\n4. mnithinn24/teampulse-ai-ops-agent#85: Synthetic pull request #85 addressing ops task (3187 days, author: alice)\n5. mnithinn24/teampulse-ai-ops-agent#84: Synthetic pull request #84 addressing ops task (3149 days, author: frank)",
+        "guards_against": "Single-item rank queries returned arbitrary items instead of the true extreme.",
+        "error": null
+      },
+      {
+        "id": "QC-01",
+        "category": "query_count",
+        "passed": true,
+        "latency_ms": 73.44,
+        "expected": {
+          "count": 88,
+          "contains": [
+            "88"
+          ]
+        },
+        "actual": "There are 88 stale pull requests.",
+        "guards_against": "Stale PR count returned 15 because the LLM prompt list was pre-sliced to 15.",
+        "error": null
+      },
+      {
+        "id": "QC-02",
+        "category": "query_count",
+        "passed": true,
+        "latency_ms": 51.85,
+        "expected": {
+          "count": 88,
+          "contains": [
+            "88"
+          ]
+        },
+        "actual": "There are 88 open pull requests.",
+        "guards_against": "Counting open PRs returned stale item count rather than total collected PRs.",
+        "error": null
+      },
+      {
+        "id": "QC-03",
+        "category": "query_count",
+        "passed": false,
+        "latency_ms": 52.21,
+        "expected": {
+          "count": 15,
+          "contains": [
+            "15"
+          ]
+        },
+        "actual": "There are 88 open pull requests.",
+        "guards_against": "Author filtering failed or missed items outside the first page/prompt slice.",
+        "error": null
+      },
+      {
+        "id": "QC-04",
+        "category": "query_count",
+        "passed": false,
+        "latency_ms": 36.91,
+        "expected": {
+          "count": 15,
+          "contains": [
+            "15"
+          ]
+        },
+        "actual": "There are 88 open pull requests.",
+        "guards_against": "Author name matching was case-sensitive or truncated.",
+        "error": null
+      },
+      {
+        "id": "QC-05",
+        "category": "query_count",
+        "passed": true,
+        "latency_ms": 36.74,
+        "expected": {
+          "count": 3,
+          "contains": [
+            "3"
+          ]
+        },
+        "actual": "There are 3 open Jira tickets.",
+        "guards_against": "Counting Jira tickets returned 0 when all tickets were fresh.",
+        "error": null
+      },
+      {
+        "id": "QC-06",
+        "category": "query_count",
+        "passed": true,
+        "latency_ms": 45.41,
+        "expected": {
+          "count": 0,
+          "contains": [
+            "0"
+          ]
+        },
+        "actual": "There are 0 stale Jira tickets.",
+        "guards_against": "Reported stale tickets even when all Jira tickets are fresh.",
+        "error": null
+      },
+      {
+        "id": "QL-01",
+        "category": "query_lookup",
+        "passed": true,
+        "latency_ms": 42.25,
+        "expected": {
+          "found": true,
+          "contains": [
+            "KAN-1",
+            "Setup database connection retry"
+          ]
+        },
+        "actual": "KAN-1: Setup database connection retry (3 days, author: alice, status: Open).",
+        "guards_against": "Jira ticket lookup failed to inspect fresh issues not present in prompt.",
+        "error": null
+      },
+      {
+        "id": "QL-02",
+        "category": "query_lookup",
+        "passed": true,
+        "latency_ms": 41.86,
+        "expected": {
+          "found": true,
+          "contains": [
+            "KAN-2",
+            "Investigate memory spike in scheduler"
+          ]
+        },
+        "actual": "KAN-2: Investigate memory spike in scheduler (4 days, author: bob, status: In Progress).",
+        "guards_against": "Key lookup did not parse key from natural language questions.",
+        "error": null
+      },
+      {
+        "id": "QL-03",
+        "category": "query_lookup",
+        "passed": true,
+        "latency_ms": 44.65,
+        "expected": {
+          "found": true,
+          "contains": [
+            "#1",
+            "20"
+          ]
+        },
+        "actual": "mnithinn24/teampulse-ai-ops-agent#1: Synthetic pull request #1 addressing ops task (20 days, author: alice, status: open).",
+        "guards_against": "PR number lookup failed on leading '#' symbol.",
+        "error": null
+      },
+      {
+        "id": "QL-04",
+        "category": "query_lookup",
+        "passed": true,
+        "latency_ms": 44.29,
+        "expected": {
+          "found": false,
+          "contains": [
+            "KAN-42 is not in the collected data"
+          ]
+        },
+        "actual": "KAN-42 is not in the collected data.",
+        "guards_against": "Missing Jira tickets triggered expensive hallucinating LLM calls instead of code response.",
+        "error": null
+      },
+      {
+        "id": "QL-05",
+        "category": "query_lookup",
+        "passed": true,
+        "latency_ms": 42.27,
+        "expected": {
+          "found": false,
+          "contains": [
+            "not in the collected data"
+          ]
+        },
+        "actual": "#9999 is not in the collected data.",
+        "guards_against": "Missing PR numbers caused model hallucination or unhandled exceptions.",
+        "error": null
+      },
+      {
+        "id": "QO-01",
+        "category": "query_out_of_scope",
+        "passed": true,
+        "latency_ms": 37.1,
+        "expected": {
+          "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+        },
+        "actual": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+        "guards_against": "Weather questions triggered LLM calls and attempted data source lookups.",
+        "error": null
+      },
+      {
+        "id": "QO-02",
+        "category": "query_out_of_scope",
+        "passed": true,
+        "latency_ms": 39.05,
+        "expected": {
+          "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+        },
+        "actual": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+        "guards_against": "Joke requests leaked conversational LLM tokens instead of fast rejection.",
+        "error": null
+      },
+      {
+        "id": "QO-03",
+        "category": "query_out_of_scope",
+        "passed": true,
+        "latency_ms": 36.34,
+        "expected": {
+          "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+        },
+        "actual": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+        "guards_against": "General knowledge questions bypassed ops scope boundaries.",
+        "error": null
+      },
+      {
+        "id": "QO-04",
+        "category": "query_out_of_scope",
+        "passed": true,
+        "latency_ms": 32.76,
+        "expected": {
+          "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+        },
+        "actual": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+        "guards_against": "Empty whitespace query raised uncaught exception or malformed intent.",
+        "error": null
+      },
+      {
+        "id": "QO-05",
+        "category": "query_out_of_scope",
+        "passed": true,
+        "latency_ms": 33.56,
+        "expected": {
+          "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
+        },
+        "actual": "I can only answer questions about your GitHub pull requests and Jira tickets.",
+        "guards_against": "Long gibberish text caused prompt injection or high token consumption.",
+        "error": null
+      },
+      {
+        "id": "SD-01",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.01,
+        "expected": {
+          "is_stale": false
+        },
+        "actual": {
+          "is_stale": false
+        },
+        "guards_against": "PR 1 day below threshold (6d < 7d) was erroneously marked stale.",
+        "error": null
+      },
+      {
+        "id": "SD-02",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.0,
+        "expected": {
+          "is_stale": true
+        },
+        "actual": {
+          "is_stale": true
+        },
+        "guards_against": "PR exactly at threshold (7d == 7d) was treated as non-stale with strict '>' instead of '>='.",
+        "error": null
+      },
+      {
+        "id": "SD-03",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.0,
+        "expected": {
+          "is_stale": true
+        },
+        "actual": {
+          "is_stale": true
+        },
+        "guards_against": "PR 1 day above threshold (8d > 7d) failed to be flagged as stale.",
+        "error": null
+      },
+      {
+        "id": "SD-04",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.0,
+        "expected": {
+          "is_stale": false
+        },
+        "actual": {
+          "is_stale": false
+        },
+        "guards_against": "Jira ticket 1 day below threshold (13d < 14d) was erroneously marked stale.",
+        "error": null
+      },
+      {
+        "id": "SD-05",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.0,
+        "expected": {
+          "is_stale": true
+        },
+        "actual": {
+          "is_stale": true
+        },
+        "guards_against": "Jira ticket exactly at threshold (14d == 14d) was not recognized as stale.",
+        "error": null
+      },
+      {
+        "id": "SD-06",
+        "category": "stale_detection",
+        "passed": true,
+        "latency_ms": 0.0,
+        "expected": {
+          "is_stale": true
+        },
+        "actual": {
+          "is_stale": true
+        },
+        "guards_against": "Jira ticket 1 day above threshold (15d > 14d) was not flagged as stale.",
+        "error": null
+      },
+      {
+        "id": "GR-01",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.1,
+        "expected": {
+          "blocked": true,
+          "survives_grounding": false
+        },
+        "actual": {
+          "blocked": true,
+          "survives_grounding": false
+        },
+        "guards_against": "Hallucinated PR IDs invented by LLM leaking into the briefing.",
+        "error": null
+      },
+      {
+        "id": "GR-02",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.05,
+        "expected": {
+          "blocked": true,
+          "survives_grounding": false
+        },
+        "actual": {
+          "blocked": true,
+          "survives_grounding": false
+        },
+        "guards_against": "Hallucinated Jira keys invented by LLM leaking into the briefing.",
+        "error": null
+      },
+      {
+        "id": "GR-03",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.13,
+        "expected": {
+          "blocked": false,
+          "survives_grounding": true,
+          "grounded_age": 20,
+          "grounded_author": "alice"
+        },
+        "actual": {
+          "normalized_id": "mnithinn24/teampulse-ai-ops-agent#1",
+          "survives_grounding": true,
+          "grounded_age": 20,
+          "grounded_author": "alice",
+          "reason": "Open for 20 days, reviewers: bob, last activity 20 days ago."
+        },
+        "guards_against": "LLM hallucinating fake age or author numbers instead of using factual collected evidence.",
+        "error": null
+      },
+      {
+        "id": "GR-04",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.06,
+        "expected": {
+          "blocked": false,
+          "reason_replaced_by_code": true,
+          "forbidden_text": [
+            "broke production",
+            "refused to reply"
+          ]
+        },
+        "actual": {
+          "normalized_id": "mnithinn24/teampulse-ai-ops-agent#1",
+          "survives_grounding": true,
+          "grounded_age": 20,
+          "grounded_author": "alice",
+          "reason": "Open for 20 days, reviewers: bob, last activity 20 days ago."
+        },
+        "guards_against": "Model inventing inflammatory unsupported allegations in reason text.",
+        "error": null
+      },
+      {
+        "id": "GR-05",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.07,
+        "expected": {
+          "normalized_id": "mnithinn24/teampulse-ai-ops-agent#88",
+          "survives_grounding": true
+        },
+        "actual": {
+          "normalized_id": "mnithinn24/teampulse-ai-ops-agent#88",
+          "survives_grounding": true,
+          "grounded_age": 3300,
+          "grounded_author": "dave",
+          "reason": "Open for 3300 days, reviewers: eve, last activity 3297 days ago."
+        },
+        "guards_against": "Alternate PR reference format like #88 rejected instead of normalized to canonical ID.",
+        "error": null
+      },
+      {
+        "id": "GR-06",
+        "category": "grounding",
+        "passed": true,
+        "latency_ms": 0.06,
+        "expected": {
+          "normalized_id": "KAN-1",
+          "survives_grounding": true
+        },
+        "actual": {
+          "normalized_id": "KAN-1",
+          "survives_grounding": true,
+          "grounded_age": 3,
+          "grounded_author": "alice",
+          "reason": "Open for 3 days, assigned to alice, last activity 1 days ago."
+        },
+        "guards_against": "Valid Jira issue flagged by LLM was erroneously dropped during grounding.",
+        "error": null
+      },
+      {
+        "id": "FH-01",
+        "category": "failure_handling",
+        "passed": true,
+        "latency_ms": 1.52,
+        "expected": {
+          "starts_with_warning": true,
+          "warning_contains": "WARNING: GitHub data unavailable",
+          "no_all_clear": true,
+          "unknown_pr_count": true
+        },
+        "actual": "WARNING: GitHub data unavailable (rate limit exceeded). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: unknown open PRs (unknown stale) \u2022 0 stale tickets): Data collection was incomplete.",
+        "guards_against": "GitHub failure made briefing show 'All clear' and '0 open PRs'.",
+        "error": null
+      },
+      {
+        "id": "FH-02",
+        "category": "failure_handling",
+        "passed": true,
+        "latency_ms": 0.29,
+        "expected": {
+          "starts_with_warning": true,
+          "warning_contains": "WARNING: Jira data unavailable",
+          "no_all_clear": true,
+          "unknown_ticket_count": true
+        },
+        "actual": "WARNING: Jira data unavailable (auth failed: 401 Unauthorized). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: 2 open PRs (2 stale) \u2022 unknown stale tickets): Data collection was incomplete.",
+        "guards_against": "Jira failure made briefing show 'All clear' and '0 stale tickets'.",
+        "error": null
+      },
+      {
+        "id": "FH-03",
+        "category": "failure_handling",
+        "passed": true,
+        "latency_ms": 0.43,
+        "expected": {
+          "starts_with_warning": true,
+          "warning_contains": [
+            "WARNING: GitHub data unavailable",
+            "WARNING: Jira data unavailable"
+          ],
+          "no_all_clear": true
+        },
+        "actual": "WARNING: GitHub data unavailable (Network timeout). This briefing may be incomplete.\nWARNING: Jira data unavailable (Service 503 unavailable). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: unknown open PRs (unknown stale) \u2022 unknown stale tickets): Data collection was incomplete.",
+        "guards_against": "Simultaneous data source failure displayed All clear with 0 counts across both sources.",
+        "error": null
+      },
+      {
+        "id": "FH-04",
+        "category": "failure_handling",
+        "passed": true,
+        "latency_ms": 0.24,
+        "expected": {
+          "warning_contains": "reset at 15:30 IST",
+          "no_all_clear": true
+        },
+        "actual": "WARNING: GitHub data unavailable (rate limit reset at 15:30 IST). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: unknown open PRs (unknown stale) \u2022 0 stale tickets): Data collection was incomplete.",
+        "guards_against": "Rate limit reset time was missing or displayed in wrong timezone.",
+        "error": null
+      },
+      {
+        "id": "FH-05",
+        "category": "failure_handling",
+        "passed": true,
+        "latency_ms": 0.21,
+        "expected": {
+          "warning_contains": "HTTP 403 Forbidden",
+          "forbidden_in_warning": [
+            "details",
+            "secret_token"
+          ]
+        },
+        "actual": "WARNING: GitHub data unavailable (HTTP 403 Forbidden). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: unknown open PRs (unknown stale) \u2022 0 stale tickets): Data collection was incomplete.",
+        "guards_against": "Raw exception details and internal dictionaries leaking into user-visible WARNING text.",
+        "error": null
+      },
+      {
+        "id": "BW-01",
+        "category": "briefing_wording",
+        "passed": true,
+        "latency_ms": 0.23,
+        "expected": {
+          "shows_priority_headers": true,
+          "no_all_clear": true
+        },
+        "actual": "TeamPulse Ops Briefing \u2014 Friday, October 16, 2026: 2 item(s) need review.",
+        "guards_against": "New flags present in briefing still showed 'All clear' header.",
+        "error": null
+      },
+      {
+        "id": "BW-02",
+        "category": "briefing_wording",
+        "passed": true,
+        "latency_ms": 0.05,
+        "expected": {
+          "exact_sentence": "No new items since the last briefing. 3 PRs and 2 tickets are still stale.",
+          "no_all_clear": true
+        },
+        "actual": "TeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: 3 open PRs (3 stale) \u2022 2 stale tickets): No new items since the last briefing. 3 PRs and 2 tickets are still stale.",
+        "guards_against": "0 new flags with ongoing stale items said 'All clear' instead of showing persistent stale count.",
+        "error": null
+      },
+      {
+        "id": "BW-03",
+        "category": "briefing_wording",
+        "passed": true,
+        "latency_ms": 0.02,
+        "expected": {
+          "contains_all_clear": true
+        },
+        "actual": "TeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: 0 open PRs (0 stale) \u2022 0 stale tickets): All clear! No items require attention.",
+        "guards_against": "Truly all-clear state (0 stale items across all healthy sources) failed to show All clear.",
+        "error": null
+      },
+      {
+        "id": "BW-04",
+        "category": "briefing_wording",
+        "passed": true,
+        "latency_ms": 0.16,
+        "expected": {
+          "no_all_clear": true,
+          "starts_with_warning": true
+        },
+        "actual": "WARNING: GitHub data unavailable (rate limit). This briefing may be incomplete.\nTeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: unknown open PRs (unknown stale) \u2022 0 stale tickets): Data collection was incomplete.",
+        "guards_against": "Empty flags due to a failed source mistakenly showed 'All clear'.",
+        "error": null
+      },
+      {
+        "id": "BW-05",
+        "category": "briefing_wording",
+        "passed": true,
+        "latency_ms": 0.05,
+        "expected": {
+          "exact_sentence": "No new items since the last briefing. 1 PRs and 0 tickets are still stale.",
+          "no_all_clear": true
+        },
+        "actual": "TeamPulse Briefing \u2014 Friday, October 16, 2026 (Overview: 1 open PRs (1 stale) \u2022 0 stale tickets): No new items since the last briefing. 1 PRs and 0 tickets are still stale.",
+        "guards_against": "Single stale PR without stale tickets incorrectly triggered All clear.",
+        "error": null
+      },
+      {
+        "id": "AS-01",
+        "category": "action_safety",
+        "passed": true,
+        "latency_ms": 19.66,
+        "expected": {
+          "executed_calls": 1,
+          "is_idempotent": true
+        },
+        "actual": {
+          "res1": "Commented on KAN-10",
+          "executed_calls": 1
+        },
+        "guards_against": "Double-clicking Slack button or network callback retry created duplicate Jira comments.",
+        "error": null
+      },
+      {
+        "id": "AS-02",
+        "category": "action_safety",
+        "passed": true,
+        "latency_ms": 1.38,
+        "expected": {
+          "created_issue": false,
+          "reply_text": "Already tracked as KAN-42",
+          "action_status": "skipped_duplicate"
+        },
+        "actual": "Already tracked as KAN-42",
+        "guards_against": "Repeated approvals of the same stale PR created multiple duplicate Jira triage tickets.",
+        "error": null
+      },
+      {
+        "id": "AS-03",
+        "category": "action_safety",
+        "passed": true,
+        "latency_ms": 0.05,
+        "expected": {
+          "created_issue": false,
+          "contains_dry_run_tag": true,
+          "action_status": "dry_run"
+        },
+        "actual": "[DRY RUN] would comment on KAN-20",
+        "guards_against": "Dry run mode called external APIs instead of purely logging intended actions.",
+        "error": null
+      },
+      {
+        "id": "AS-04",
+        "category": "action_safety",
+        "passed": true,
+        "latency_ms": 0.4,
+        "expected": {
+          "is_valid": false
+        },
+        "actual": {
+          "is_valid": false
+        },
+        "guards_against": "Forged or tampered Slack payloads accepted by webhook endpoint.",
+        "error": null
+      },
+      {
+        "id": "AS-05",
+        "category": "action_safety",
+        "passed": true,
+        "latency_ms": 0.23,
+        "expected": {
+          "is_valid": false
+        },
+        "actual": {
+          "is_valid": false
+        },
+        "guards_against": "Replay attacks with expired Slack timestamps (> 5 min) accepted.",
+        "error": null
+      }
+    ],
+    "failed_details": [
+      {
+        "id": "QR-04",
+        "category": "query_rank",
+        "guards_against": "Ranking by last activity confused age_days with last_commit_days.",
+        "expected": {
+          "contains": [
+            "#88"
+          ],
+          "metric": "last_commit_days"
+        },
+        "actual": "Found matching items: mnithinn24/teampulse-ai-ops-agent#1: Synthetic pull request #1 addressing ops task; mnithinn24/teampulse-ai-ops-agent#2: Synthetic pull request #2 addressing ops task; mnithinn24/teampulse-ai-ops-agent#3: Synthetic pull request #3 addressing ops task",
+        "latency_ms": 4688.56
+      },
+      {
+        "id": "QC-03",
+        "category": "query_count",
+        "guards_against": "Author filtering failed or missed items outside the first page/prompt slice.",
+        "expected": {
+          "count": 15,
+          "contains": [
+            "15"
+          ]
+        },
+        "actual": "There are 88 open pull requests.",
+        "latency_ms": 52.21
+      },
+      {
+        "id": "QC-04",
+        "category": "query_count",
+        "guards_against": "Author name matching was case-sensitive or truncated.",
+        "expected": {
+          "count": 15,
+          "contains": [
+            "15"
+          ]
+        },
+        "actual": "There are 88 open pull requests.",
+        "latency_ms": 36.91
+      }
+    ]
+  },
+  "llm_eval": {
+    "enabled": false
+  },
+  "limits": {
+    "synthetic_fixtures": "88 pull requests (ages 20-3300 days) and 3 Jira tickets generated deterministically with fixed random seed (42).",
+    "simulated_llm_outputs": "Grounding and hallucination rejection tests evaluate synthetic PriorityFlags with injected fake IDs and corrupted facts.",
+    "llm_sample_size": "Capped at 6 calls total to prevent exhausting free-tier quotas (20 requests/day)."
+  }
+}
