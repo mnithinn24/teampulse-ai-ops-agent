@@ -199,10 +199,28 @@ def classify_intent_with_rules(question: str) -> QueryIntent:
 
     stale_only = "stale" in q_lower
 
-    # Rule 2: oldest, longest, waiting, most stale -> rank
-    rank_terms = ["oldest", "longest", "waiting", "most stale", "most inactive", "highest age", "slowest"]
+    # Rule 2: oldest, longest, waiting, most stale, inactivity, rank -> rank
+    rank_terms = [
+        "oldest",
+        "longest",
+        "waiting",
+        "most stale",
+        "most inactive",
+        "highest age",
+        "slowest",
+        "inactivity",
+        "inactive",
+        "idle",
+        "least active",
+        "no activity",
+        "stalest",
+        "rank",
+    ]
     if any(term in q_lower for term in rank_terms):
-        metric = "days_since_update" if "inactive" in q_lower else "age_days"
+        if any(term in q_lower for term in ["inactiv", "idle", "no activity"]):
+            metric = "days_since_update"
+        else:
+            metric = "age_days"
         limit_match = re.search(r"\b(?:top|first)?\s*(\d+)\b", q_lower)
         limit = 5
         if limit_match:

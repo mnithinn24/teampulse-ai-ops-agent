@@ -1,42 +1,42 @@
 {
-  "timestamp": "2026-10-16T10:08:02Z",
-  "git_commit": "1d4cf0d55a9e4564e1b2d7a4cdb878a9c6091d68",
+  "timestamp": "2026-10-16T10:14:55Z",
+  "git_commit": "2b300f83abfff31e2c0a2e8cf0a9de064e9f02b8",
   "python_version": "3.14.6",
   "deterministic_eval": {
     "total_cases": 48,
-    "passed_cases": 45,
-    "failed_cases": 3,
-    "overall_accuracy": 0.9375,
-    "p50_latency_ms": 0.9,
-    "p95_latency_ms": 66.32,
-    "mean_latency_ms": 117.15,
+    "passed_cases": 46,
+    "failed_cases": 2,
+    "overall_accuracy": 0.9583,
+    "p50_latency_ms": 0.93,
+    "p95_latency_ms": 38.68,
+    "mean_latency_ms": 17.22,
     "category_metrics": {
       "action_safety": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 4.34,
-        "p50_ms": 0.4,
-        "p95_ms": 16.0
+        "mean_ms": 5.49,
+        "p50_ms": 0.73,
+        "p95_ms": 20.33
       },
       "briefing_wording": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 0.1,
-        "p50_ms": 0.05,
-        "p95_ms": 0.22
+        "mean_ms": 0.15,
+        "p50_ms": 0.08,
+        "p95_ms": 0.29
       },
       "failure_handling": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 0.54,
-        "p50_ms": 0.29,
-        "p95_ms": 1.3
+        "mean_ms": 0.63,
+        "p50_ms": 0.34,
+        "p95_ms": 1.61
       },
       "grounding": {
         "total": 6,
@@ -52,36 +52,36 @@
         "passed": 4,
         "failed": 2,
         "accuracy": 0.6667,
-        "mean_ms": 49.43,
-        "p50_ms": 48.63,
-        "p95_ms": 68.13
+        "mean_ms": 35.36,
+        "p50_ms": 35.13,
+        "p95_ms": 36.7
       },
       "query_lookup": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 43.06,
-        "p50_ms": 42.27,
-        "p95_ms": 44.58
+        "mean_ms": 34.85,
+        "p50_ms": 34.79,
+        "p95_ms": 36.5
       },
       "query_out_of_scope": {
         "total": 5,
         "passed": 5,
         "failed": 0,
         "accuracy": 1.0,
-        "mean_ms": 35.76,
-        "p50_ms": 36.34,
-        "p95_ms": 38.66
+        "mean_ms": 35.22,
+        "p50_ms": 34.5,
+        "p95_ms": 37.64
       },
       "query_rank": {
         "total": 5,
-        "passed": 4,
-        "failed": 1,
-        "accuracy": 0.8,
-        "mean_ms": 981.46,
-        "p50_ms": 53.09,
-        "p95_ms": 3769.17
+        "passed": 5,
+        "failed": 0,
+        "accuracy": 1.0,
+        "mean_ms": 46.44,
+        "p50_ms": 38.86,
+        "p95_ms": 75.95
       },
       "stale_detection": {
         "total": 6,
@@ -103,7 +103,7 @@
         "id": "QR-01",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 91.59,
+        "latency_ms": 84.9,
         "expected": {
           "top_number": 88,
           "top_age": 3300,
@@ -120,7 +120,7 @@
         "id": "QR-02",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 39.17,
+        "latency_ms": 38.86,
         "expected": {
           "contains": [
             "#88",
@@ -137,7 +137,7 @@
         "id": "QR-03",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 34.87,
+        "latency_ms": 40.15,
         "expected": {
           "contains": [
             "#88",
@@ -155,15 +155,15 @@
       {
         "id": "QR-04",
         "category": "query_rank",
-        "passed": false,
-        "latency_ms": 4688.56,
+        "passed": true,
+        "latency_ms": 35.71,
         "expected": {
           "contains": [
             "#88"
           ],
           "metric": "last_commit_days"
         },
-        "actual": "Found matching items: mnithinn24/teampulse-ai-ops-agent#1: Synthetic pull request #1 addressing ops task; mnithinn24/teampulse-ai-ops-agent#2: Synthetic pull request #2 addressing ops task; mnithinn24/teampulse-ai-ops-agent#3: Synthetic pull request #3 addressing ops task",
+        "actual": "Top 5 pull requests ranked by days since last update (total: 88):\n1. mnithinn24/teampulse-ai-ops-agent#88: Synthetic pull request #88 addressing ops task (3297 days inactive, author: dave)\n2. mnithinn24/teampulse-ai-ops-agent#87: Synthetic pull request #87 addressing ops task (3260 days inactive, author: carol)\n3. mnithinn24/teampulse-ai-ops-agent#86: Synthetic pull request #86 addressing ops task (3224 days inactive, author: bob)\n4. mnithinn24/teampulse-ai-ops-agent#85: Synthetic pull request #85 addressing ops task (3187 days inactive, author: alice)\n5. mnithinn24/teampulse-ai-ops-agent#84: Synthetic pull request #84 addressing ops task (3144 days inactive, author: frank)",
         "guards_against": "Ranking by last activity confused age_days with last_commit_days.",
         "error": null
       },
@@ -171,7 +171,7 @@
         "id": "QR-05",
         "category": "query_rank",
         "passed": true,
-        "latency_ms": 53.09,
+        "latency_ms": 32.6,
         "expected": {
           "contains": [
             "#88",
@@ -186,7 +186,7 @@
         "id": "QC-01",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 73.44,
+        "latency_ms": 36.59,
         "expected": {
           "count": 88,
           "contains": [
@@ -201,7 +201,7 @@
         "id": "QC-02",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 51.85,
+        "latency_ms": 35.08,
         "expected": {
           "count": 88,
           "contains": [
@@ -216,7 +216,7 @@
         "id": "QC-03",
         "category": "query_count",
         "passed": false,
-        "latency_ms": 52.21,
+        "latency_ms": 36.73,
         "expected": {
           "count": 15,
           "contains": [
@@ -231,7 +231,7 @@
         "id": "QC-04",
         "category": "query_count",
         "passed": false,
-        "latency_ms": 36.91,
+        "latency_ms": 34.62,
         "expected": {
           "count": 15,
           "contains": [
@@ -246,7 +246,7 @@
         "id": "QC-05",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 36.74,
+        "latency_ms": 33.98,
         "expected": {
           "count": 3,
           "contains": [
@@ -261,7 +261,7 @@
         "id": "QC-06",
         "category": "query_count",
         "passed": true,
-        "latency_ms": 45.41,
+        "latency_ms": 35.18,
         "expected": {
           "count": 0,
           "contains": [
@@ -276,7 +276,7 @@
         "id": "QL-01",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 42.25,
+        "latency_ms": 33.11,
         "expected": {
           "found": true,
           "contains": [
@@ -292,7 +292,7 @@
         "id": "QL-02",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 41.86,
+        "latency_ms": 34.96,
         "expected": {
           "found": true,
           "contains": [
@@ -308,7 +308,7 @@
         "id": "QL-03",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 44.65,
+        "latency_ms": 34.79,
         "expected": {
           "found": true,
           "contains": [
@@ -324,7 +324,7 @@
         "id": "QL-04",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 44.29,
+        "latency_ms": 36.89,
         "expected": {
           "found": false,
           "contains": [
@@ -339,7 +339,7 @@
         "id": "QL-05",
         "category": "query_lookup",
         "passed": true,
-        "latency_ms": 42.27,
+        "latency_ms": 34.51,
         "expected": {
           "found": false,
           "contains": [
@@ -354,7 +354,7 @@
         "id": "QO-01",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 37.1,
+        "latency_ms": 34.04,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -366,7 +366,7 @@
         "id": "QO-02",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 39.05,
+        "latency_ms": 34.5,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -378,7 +378,7 @@
         "id": "QO-03",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 36.34,
+        "latency_ms": 34.38,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -390,7 +390,7 @@
         "id": "QO-04",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 32.76,
+        "latency_ms": 34.83,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -402,7 +402,7 @@
         "id": "QO-05",
         "category": "query_out_of_scope",
         "passed": true,
-        "latency_ms": 33.56,
+        "latency_ms": 38.34,
         "expected": {
           "answer": "I can only answer questions about your GitHub pull requests and Jira tickets."
         },
@@ -551,7 +551,7 @@
         "id": "GR-04",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.06,
+        "latency_ms": 0.07,
         "expected": {
           "blocked": false,
           "reason_replaced_by_code": true,
@@ -574,7 +574,7 @@
         "id": "GR-05",
         "category": "grounding",
         "passed": true,
-        "latency_ms": 0.07,
+        "latency_ms": 0.06,
         "expected": {
           "normalized_id": "mnithinn24/teampulse-ai-ops-agent#88",
           "survives_grounding": true
@@ -612,7 +612,7 @@
         "id": "FH-01",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 1.52,
+        "latency_ms": 1.9,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": "WARNING: GitHub data unavailable",
@@ -627,7 +627,7 @@
         "id": "FH-02",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.29,
+        "latency_ms": 0.34,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": "WARNING: Jira data unavailable",
@@ -642,7 +642,7 @@
         "id": "FH-03",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.43,
+        "latency_ms": 0.47,
         "expected": {
           "starts_with_warning": true,
           "warning_contains": [
@@ -659,7 +659,7 @@
         "id": "FH-04",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.24,
+        "latency_ms": 0.21,
         "expected": {
           "warning_contains": "reset at 15:30 IST",
           "no_all_clear": true
@@ -672,7 +672,7 @@
         "id": "FH-05",
         "category": "failure_handling",
         "passed": true,
-        "latency_ms": 0.21,
+        "latency_ms": 0.25,
         "expected": {
           "warning_contains": "HTTP 403 Forbidden",
           "forbidden_in_warning": [
@@ -688,7 +688,7 @@
         "id": "BW-01",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.23,
+        "latency_ms": 0.28,
         "expected": {
           "shows_priority_headers": true,
           "no_all_clear": true
@@ -701,7 +701,7 @@
         "id": "BW-02",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.05,
+        "latency_ms": 0.08,
         "expected": {
           "exact_sentence": "No new items since the last briefing. 3 PRs and 2 tickets are still stale.",
           "no_all_clear": true
@@ -714,7 +714,7 @@
         "id": "BW-03",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.02,
+        "latency_ms": 0.03,
         "expected": {
           "contains_all_clear": true
         },
@@ -726,7 +726,7 @@
         "id": "BW-04",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.16,
+        "latency_ms": 0.29,
         "expected": {
           "no_all_clear": true,
           "starts_with_warning": true
@@ -739,7 +739,7 @@
         "id": "BW-05",
         "category": "briefing_wording",
         "passed": true,
-        "latency_ms": 0.05,
+        "latency_ms": 0.06,
         "expected": {
           "exact_sentence": "No new items since the last briefing. 1 PRs and 0 tickets are still stale.",
           "no_all_clear": true
@@ -752,7 +752,7 @@
         "id": "AS-01",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 19.66,
+        "latency_ms": 25.13,
         "expected": {
           "executed_calls": 1,
           "is_idempotent": true
@@ -768,7 +768,7 @@
         "id": "AS-02",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 1.38,
+        "latency_ms": 1.14,
         "expected": {
           "created_issue": false,
           "reply_text": "Already tracked as KAN-42",
@@ -782,7 +782,7 @@
         "id": "AS-03",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.05,
+        "latency_ms": 0.03,
         "expected": {
           "created_issue": false,
           "contains_dry_run_tag": true,
@@ -796,7 +796,7 @@
         "id": "AS-04",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.4,
+        "latency_ms": 0.73,
         "expected": {
           "is_valid": false
         },
@@ -810,7 +810,7 @@
         "id": "AS-05",
         "category": "action_safety",
         "passed": true,
-        "latency_ms": 0.23,
+        "latency_ms": 0.4,
         "expected": {
           "is_valid": false
         },
@@ -823,19 +823,6 @@
     ],
     "failed_details": [
       {
-        "id": "QR-04",
-        "category": "query_rank",
-        "guards_against": "Ranking by last activity confused age_days with last_commit_days.",
-        "expected": {
-          "contains": [
-            "#88"
-          ],
-          "metric": "last_commit_days"
-        },
-        "actual": "Found matching items: mnithinn24/teampulse-ai-ops-agent#1: Synthetic pull request #1 addressing ops task; mnithinn24/teampulse-ai-ops-agent#2: Synthetic pull request #2 addressing ops task; mnithinn24/teampulse-ai-ops-agent#3: Synthetic pull request #3 addressing ops task",
-        "latency_ms": 4688.56
-      },
-      {
         "id": "QC-03",
         "category": "query_count",
         "guards_against": "Author filtering failed or missed items outside the first page/prompt slice.",
@@ -846,7 +833,7 @@
           ]
         },
         "actual": "There are 88 open pull requests.",
-        "latency_ms": 52.21
+        "latency_ms": 36.73
       },
       {
         "id": "QC-04",
@@ -859,7 +846,7 @@
           ]
         },
         "actual": "There are 88 open pull requests.",
-        "latency_ms": 36.91
+        "latency_ms": 34.62
       }
     ]
   },

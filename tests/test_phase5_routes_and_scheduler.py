@@ -23,6 +23,7 @@ from app.agents.query import (
     _query_cache,
     clear_query_cache,
     classify_intent_with_rules,
+    classify_query_intent,
     handle_plain_language_query,
     sanitize_and_ground_answer,
 )
@@ -612,6 +613,38 @@ async def test_lookup_missing_pr_id_builds_code_answer_no_llm_call() -> None:
     # Assert no LLM call for answering
     mock_router.get_candidates.assert_not_called()
     mock_router.call_candidate.assert_not_called()
+
+
+def test_rank_by_inactivity_intent_and_metric() -> None:
+    """'Rank pull requests by inactivity' gives rank with days_since_update."""
+    intent = classify_intent_with_rules("Rank pull requests by inactivity")
+    assert intent.operation == "rank"
+    assert intent.metric == "days_since_update"
+
+
+def test_which_pull_request_is_single_oldest_intent_and_metric() -> None:
+    """'Which pull request is the single oldest?' still gives rank with age_days."""
+    intent = classify_intent_with_rules("Which pull request is the single oldest?")
+    assert intent.operation == "rank"
+    assert intent.metric == "age_days"
+
+
+@pytest.mark.asyncio
+async def test_rank_keyword_rules_no_llm_call() -> None:
+    """Keyword rank rules classify without making any LLM call."""
+    mock_router = AsyncMock(spec=LLMRouter)
+    intent1, model1 = await classify_query_intent("Rank pull requests by inactivity", router=mock_router)
+    assert intent1.operation == "rank"
+    assert intent1.metric == "days_since_update"
+    assert model1 == "rule_based_classifier"
+    mock_router.route.assert_not_called()
+
+    intent2, model2 = await classify_query_intent("Which pull request is the single oldest?", router=mock_router)
+    assert intent2.operation == "rank"
+    assert intent2.metric == "age_days"
+    assert model2 == "rule_based_classifier"
+    mock_router.route.assert_not_called()
+
 
 
 # -----------------------------------------------------------------------------
