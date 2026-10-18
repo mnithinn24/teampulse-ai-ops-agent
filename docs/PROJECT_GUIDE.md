@@ -386,14 +386,43 @@ A new briefing appears in your Slack channel with priority flags and Approve/Dis
 
 ## 16. How to Test
 
-### Automated Unit Tests
-Run pytest across the entire test suite:
+### Automated Unit Tests (Phase 11)
+Run pytest across the entire test suite locally. All 208 unit tests run in-memory against mock fixtures with zero external dependencies:
 ```bash
 pytest -q
 ```
 Expected result:
 ```text
-170 passed, 1 warning in 12.09s
+208 passed, 3 warnings in 14.88s
+```
+
+### End-to-End Local Feature Simulation
+Run the full 10-feature local simulator without real Slack, Jira, or GitHub credentials:
+```bash
+python scripts/simulate_all_features.py
+```
+Output:
+```text
+===========================================================================
+         TeamPulse Phase 11: End-to-End Local Simulation Suite
+===========================================================================
+Safety Mode: Isolated in-memory SQLite | Dry-Run Active | 0 Network Calls
+
+[01/10] 1 & 2: Ingestion & Stale Detection .................. [PASS] (0.06ms)
+[02/10] 3: Grounded Analysis & Hallucination Guard .......... [PASS] (0.12ms)
+[03/10] 4: Slack Morning Briefing Block Kit ................. [PASS] (0.4ms)
+[04/10] 5: Interactive Actions & Idempotency ................ [PASS] (17.91ms)
+[05/10] 6: Plain-Language Query Engine & Shield ............. [PASS] (195.33ms)
+[06/10] 7: AI Project Planner (Jira Hierarchy) .............. [PASS] (2380.9ms)
+[07/10] 8: PR Completion Slack Alert & Jira Link ............ [PASS] (1.62ms)
+[08/10] 9: One-Click Slack Auto-Merge & Done ................ [PASS] (7.73ms)
+[09/10] 10: Decline PR Action & State Sync .................. [PASS] (4.69ms)
+[10/10] 11: Security & Network Isolation .................... [PASS] (0.03ms)
+
+===========================================================================
+Summary: 10/10 Features Verified (100.0%) | Time: 2.61s
+Report saved to: simulations/simulation_report.json
+===========================================================================
 ```
 
 ### Offline Evaluation Suite
@@ -431,11 +460,66 @@ SUCCESS: All deterministic evaluation cases passed!
 - [ ] Created `.env` from `.env.example`.
 - [ ] Created MySQL `teampulse` database.
 - [ ] Ran `python scripts/reset_db.py --yes` and verified tables created.
-- [ ] Ran `pytest -q` and confirmed all 170 tests passed.
+- [ ] Ran `pytest -q` and confirmed all 208 tests passed.
+- [ ] Ran `python scripts/simulate_all_features.py` and confirmed 10/10 features passed.
 - [ ] Ran `python evals/run_eval.py` and confirmed all 48 cases passed.
 - [ ] Started server with `uvicorn app.api.main:app --port 8000` and checked `curl http://localhost:8000/health`.
 
-## 18. Common Problems and Real Fixes
+## 18. Phase 8: AI Project Planner
+
+### What It Does
+Instead of manually typing dozens of Jira tickets for a new project, you can simply type a project sentence:
+`Medical RAG, 2 developers, 2 weeks`
+
+TeamPulse does the following:
+1. **Calculates capacity**: $2 \text{ developers} \times 2 \text{ weeks} \times 40 \text{ hours/week} = 160 \text{ hours}$.
+2. **Breaks down into Epics**: System Architecture (48h), API Services (48h), UI Frontend (40h), Testing & QA (24h).
+3. **Breaks down into Tasks & Subtasks**: Concrete code deliverables under each Epic with granular subtasks.
+4. **Creates Jira Hierarchy**:
+   - Creates the Epic issue (`issuetype: "Epic"`).
+   - Creates child Tasks linked to the parent Epic (`parent: {"key": epic_key}`).
+   - Creates child Subtasks linked to the parent Task (`parent: {"key": task_key}`, `issuetype: "Subtask"`).
+5. **Dry-Run Mode**: When `DRY_RUN_ACTIONS=true` or `"dry_run": true`, TeamPulse generates preview keys (`DRY-KAN-E1`, `DRY-KAN-T1`, `DRY-KAN-S1`) so you can inspect the plan without modifying Jira.
+
+### How to Use It
+- **Via Slack**:
+  ```text
+  /teampulse plan Medical RAG with React UI, 2 developers, 2 weeks
+  ```
+- **Via API**:
+  ```bash
+  curl -X POST http://localhost:8000/project/plan \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: your_admin_api_key" \
+    -d '{"description": "Medical RAG, 2 developers, 2 weeks", "dry_run": false}'
+  ```
+
+## 19. Phase 9 & 10: PR Completion Alert & One-Click Auto-Merge
+
+### What It Does
+When a developer finishes their assigned task and opens a pull request:
+1. GitHub notifies TeamPulse via webhook (`POST /github/webhook`).
+2. TeamPulse reads the PR title, branch, and description to find the linked Jira ticket (e.g. `KAN-42`).
+3. TeamPulse fetches the Jira issue status and summary, then posts an alert to the `#engineering` Slack channel with:
+   - PR title and branch link
+   - Jira ticket link and current status
+   - Interactive `[ Approve & Merge ]` and `[ Decline ]` buttons
+4. A team lead reviews the PR and clicks a button directly in Slack:
+   - **Approve & Merge (Phase 10: Auto-Merge)**: TeamPulse automatically merges the PR into `main` via the GitHub REST API, transitions the linked Jira ticket to **Done** via Jira API v3 workflow transitions, posts an approval confirmation comment to Jira, and logs the action in the database.
+   - **Decline**: TeamPulse closes the PR on GitHub, posts a notification comment to Jira, and logs the action.
+   - The Slack message buttons are replaced with a permanent confirmation tag showing the merge commit SHA and Jira Done status.
+
+### How to Use It
+- Configure GitHub Webhook URL: `https://<ngrok-domain>/github/webhook`
+- Or trigger auto-merge directly via API:
+  ```bash
+  curl -X POST http://localhost:8000/github/pr/merge \
+    -H "Content-Type: application/json" \
+    -H "X-API-Key: your_admin_api_key" \
+    -d '{"repo": "owner/repo", "pr_number": 42, "jira_key": "KAN-42", "dry_run": false}'
+  ```
+
+## 20. Common Problems and Real Fixes
 
 | Problem | Cause | How to Fix |
 | :--- | :--- | :--- |

@@ -452,12 +452,71 @@ class JiraClient:
         payload = {"body": text_to_adf(comment_text)}
         return await self._request("POST", endpoint, json_data=payload)
 
+    async def get_transitions(self, issue_key: str) -> List[Dict[str, Any]]:
+        """Get available workflow transitions for a Jira issue using API v3.
+
+        Args:
+            issue_key: Jira issue key (e.g. 'KAN-42').
+
+        Returns:
+            List of transition dictionaries.
+        """
+        endpoint = f"/rest/api/3/issue/{issue_key}/transitions"
+        res = await self._request("GET", endpoint)
+        return res.get("transitions", [])
+
+    async def transition_issue(self, issue_key: str, transition_id: str) -> None:
+        """Perform a workflow transition on a Jira issue using API v3.
+
+        Args:
+            issue_key: Jira issue key (e.g. 'KAN-42').
+            transition_id: Target workflow transition ID.
+        """
+        endpoint = f"/rest/api/3/issue/{issue_key}/transitions"
+        payload = {"transition": {"id": transition_id}}
+        await self._request("POST", endpoint, json_data=payload)
+
+    async def mark_issue_done(self, issue_key: str) -> Optional[str]:
+        """Find and execute a workflow transition moving the Jira ticket to Done or Closed.
+
+        Args:
+            issue_key: Jira issue key (e.g. 'KAN-42').
+
+        Returns:
+            The name of the resolved status (e.g. 'Done', 'Closed'), or None if no terminal transition found.
+        """
+        transitions = await self.get_transitions(issue_key)
+        target_transition = None
+
+        for t in transitions:
+            t_name = t.get("name", "").lower()
+            to_info = t.get("to", {})
+            to_name = to_info.get("name", "").lower()
+            status_cat = to_info.get("statusCategory", {}).get("key", "").lower()
+
+            if (
+                t_name in RESOLVED_STATUSES
+                or to_name in RESOLVED_STATUSES
+                or status_cat == "done"
+            ):
+                target_transition = t
+                break
+
+        if target_transition:
+            t_id = str(target_transition["id"])
+            status_name = target_transition.get("to", {}).get("name") or target_transition.get("name", "Done")
+            await self.transition_issue(issue_key, t_id)
+            return status_name
+
+        return None
+
     async def create_issue(
         self,
         project_key: str,
         summary: str,
         description: str = "",
         issue_type: str = "Task",
+        parent_key: Optional[str] = None,
     ) -> JiraIssue:
         """Create a new Jira issue using API v3 with ADF description.
 
@@ -465,7 +524,8 @@ class JiraClient:
             project_key: Jira project key where issue will be created.
             summary: Title or summary of the issue.
             description: Description of the issue (converted to ADF).
-            issue_type: Issue type name (default: 'Task').
+            issue_type: Issue type name (default: 'Task', or 'Epic', 'Subtask').
+            parent_key: Optional parent issue key (e.g. 'KAN-10') for subtasks or tasks.
 
         Returns:
             Newly created JiraIssue model.
@@ -480,11 +540,25 @@ class JiraClient:
             "summary": summary,
             "issuetype": {"name": issue_type},
         }
+        if parent_key:
+            fields["parent"] = {"key": parent_key}
         if description:
             fields["description"] = text_to_adf(description)
 
         payload = {"fields": fields}
-        res = await self._request("POST", endpoint, json_data=payload)
+        try:
+            res = await self._request("POST", endpoint, json_data=payload)
+        except JiraError as exc:
+            # Handle instances where Subtask is named Sub-task or vice versa
+            err_str = str(exc).lower()
+            if issue_type.lower() in ("subtask", "sub-task") and ("issuetype" in err_str or "issue type" in err_str):
+                alt_type = "Sub-task" if issue_type == "Subtask" else "Subtask"
+                fields["issuetype"] = {"name": alt_type}
+                payload["fields"] = fields
+                res = await self._request("POST", endpoint, json_data=payload)
+            else:
+                raise
+
         new_key = res.get("key")
         if new_key:
             return await self.get_issue(new_key)
@@ -492,6 +566,49 @@ class JiraClient:
             message="Jira issue was created but response omitted key",
             details={"response": res},
         )
+
+    async def update_issue(
+        self,
+        issue_key: str,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        estimated_hours: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Update fields of an existing Jira issue using API v3.
+
+        Args:
+            issue_key: Jira issue identifier (e.g. 'KAN-123').
+            summary: Optional new summary/title.
+            description: Optional new description text.
+            estimated_hours: Optional estimated work hours to append to description.
+
+        Returns:
+            Jira API response dictionary.
+
+        Raises:
+            JiraError: If update fails.
+        """
+        endpoint = f"/rest/api/3/issue/{issue_key}"
+        fields: Dict[str, Any] = {}
+        if summary is not None:
+            fields["summary"] = summary
+
+        full_desc = description
+        if estimated_hours is not None:
+            h_str = f"Estimated Hours: {estimated_hours}h"
+            if full_desc and "Estimated Hours:" not in full_desc:
+                full_desc = f"{full_desc}\n\n{h_str}"
+            elif not full_desc:
+                full_desc = h_str
+
+        if full_desc is not None:
+            fields["description"] = text_to_adf(full_desc)
+
+        if not fields:
+            return {}
+
+        payload = {"fields": fields}
+        return await self._request("PUT", endpoint, json_data=payload)
 
     async def fetch_open_issues(self, project_key: Optional[str] = None) -> List[JiraIssue]:
         """Fetch unresolved open issues for the configured or specified project.

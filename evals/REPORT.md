@@ -1,28 +1,28 @@
 # TeamPulse Offline Evaluation Report (Phase 6)
 
-- **Date**: 2026-10-16T11:56:56Z
-- **Git Commit**: `f4dadb8ae6b0b343d18909a9556f0a8f006c3fef`
+- **Date**: 2026-10-16T23:29:40Z
+- **Git Commit**: `5aaed274e4167a539a5ea874494cf0dccd710bb5`
 - **Python Version**: `3.14.6`
 - **Total Labeled Cases**: 48
 - **Passed**: 48
 - **Failed**: 0
 - **Overall Accuracy**: 100.0%
-- **p50 Latency**: 0.55 ms
-- **p95 Latency**: 40.13 ms
+- **p50 Latency**: 0.81 ms
+- **p95 Latency**: 38.67 ms
 
 ## 1. Deterministic Evaluation by Category
 
 | Category | Cases | Passed | Accuracy | Mean Latency (ms) | p95 Latency (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| `action_safety` | 5 | 5 | 100.0% | 3.7 | 13.83 |
-| `briefing_wording` | 5 | 5 | 100.0% | 0.09 | 0.21 |
-| `failure_handling` | 5 | 5 | 100.0% | 0.49 | 1.26 |
-| `grounding` | 6 | 6 | 100.0% | 0.06 | 0.1 |
-| `query_count` | 6 | 6 | 100.0% | 29.02 | 30.54 |
-| `query_lookup` | 5 | 5 | 100.0% | 31.54 | 42.08 |
-| `query_out_of_scope` | 5 | 5 | 100.0% | 32.42 | 40.37 |
-| `query_rank` | 5 | 5 | 100.0% | 45.15 | 83.25 |
-| `stale_detection` | 6 | 6 | 100.0% | 0.0 | 0.01 |
+| `action_safety` | 5 | 5 | 100.0% | 7.39 | 28.32 |
+| `briefing_wording` | 5 | 5 | 100.0% | 0.11 | 0.22 |
+| `failure_handling` | 5 | 5 | 100.0% | 0.58 | 1.34 |
+| `grounding` | 6 | 6 | 100.0% | 0.08 | 0.12 |
+| `query_count` | 6 | 6 | 100.0% | 36.63 | 39.77 |
+| `query_lookup` | 5 | 5 | 100.0% | 36.62 | 38.64 |
+| `query_out_of_scope` | 5 | 5 | 100.0% | 35.71 | 38.04 |
+| `query_rank` | 5 | 5 | 100.0% | 45.42 | 78.42 |
+| `stale_detection` | 6 | 6 | 100.0% | 0.0 | 0.0 |
 
 ## 2. Grounding & Hallucination Protection
 
@@ -38,8 +38,8 @@
 
 | Model | Valid JSON | Invented (Before) | Invented (After) | In Fixture | Mean (ms) | p95 (ms) | Quota Exhausted |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `gemini-2.5-flash` | 0/1 | 0/0 | 0/0 | No | 262.71 | 262.71 | 0 |
-| `gemini-2.0-flash` | 0/1 | 0/0 | 0/0 | No | 136.73 | 136.73 | 0 |
+| `gemini-2.5-flash` | 0/1 | 0/0 | 0/0 | No | 312.88 | 312.88 | 0 |
+| `gemini-2.0-flash` | 0/1 | 0/0 | 0/0 | No | 396.52 | 396.52 | 0 |
 
 ## 4. Failed Cases
 

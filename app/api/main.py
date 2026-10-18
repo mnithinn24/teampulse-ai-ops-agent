@@ -2,11 +2,16 @@
 
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from app.api.routes.briefing import router as briefing_router
+from app.api.routes.github import router as github_router
+from app.api.routes.jira import router as jira_router
+from app.api.routes.planner import router as planner_router
 from app.api.routes.slack import router as slack_router
 from app.config import get_settings
 from app.db.database import get_db_session, init_db
@@ -27,8 +32,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Starting background APScheduler...")
         start_scheduler()
 
+    from app.api.routes.jira import start_jira_sync_poller, stop_jira_sync_poller
+    start_jira_sync_poller()
+
     yield
 
+    stop_jira_sync_poller()
     stop_scheduler()
     logger.info("TeamPulse API shutting down.")
 
@@ -76,8 +85,40 @@ def create_app() -> FastAPI:
             "last_run_time": last_run_time,
         }
 
+    # UI Web Frontend Routes (Interactive AI Project Planner)
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+
+    @app.get("/", response_class=HTMLResponse, tags=["ui"])
+    @app.get("/ui", response_class=HTMLResponse, tags=["ui"])
+    @app.get("/planner", response_class=HTMLResponse, tags=["ui"])
+    async def serve_planner_ui() -> HTMLResponse:
+        """Serve the interactive TeamPulse AI Project Planner web frontend."""
+        html_file = static_dir / "index.html"
+        if html_file.exists():
+            return HTMLResponse(content=html_file.read_text(encoding="utf-8"))
+        return HTMLResponse(content="<h1>TeamPulse Planner UI</h1>")
+
+    @app.get("/static/styles.css", tags=["ui"])
+    async def serve_styles_css() -> Response:
+        """Serve Vanilla CSS styles for the frontend."""
+        css_file = static_dir / "styles.css"
+        if css_file.exists():
+            return Response(content=css_file.read_text(encoding="utf-8"), media_type="text/css")
+        return Response(content="", media_type="text/css")
+
+    @app.get("/static/app.js", tags=["ui"])
+    async def serve_app_js() -> Response:
+        """Serve frontend logic and interaction script."""
+        js_file = static_dir / "app.js"
+        if js_file.exists():
+            return Response(content=js_file.read_text(encoding="utf-8"), media_type="text/javascript")
+        return Response(content="", media_type="text/javascript")
+
     # Register routers
     app.include_router(briefing_router)
+    app.include_router(github_router)
+    app.include_router(jira_router)
+    app.include_router(planner_router)
     app.include_router(slack_router)
 
     return app

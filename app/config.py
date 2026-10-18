@@ -61,9 +61,14 @@ class Settings(BaseSettings):
 
     # GitHub Configuration
     github_token: str = Field(default="", description="GitHub Personal Access Token")
+    github_webhook_secret: str = Field(default="", description="Secret for validating incoming GitHub webhook payloads")
     github_repos: Union[List[str], str] = Field(
         default_factory=list,
         description="List of target repositories formatted as owner/repo",
+    )
+    pr_base_url: str = Field(
+        default="",
+        description="Base URL or direct URL for Pull Requests (e.g. GitHub or Bitbucket PR link)",
     )
 
     # Jira Configuration

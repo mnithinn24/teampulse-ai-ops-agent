@@ -317,3 +317,8 @@ class SlackClient:
                 message=f"Unexpected error during Slack post_ephemeral: {format_log_error(exc)}",
                 details={"channel": channel, "user": user, "error": format_log_error(exc)},
             ) from exc
+
+    async def close(self) -> None:
+        """Close client sessions if applicable."""
+        pass
+

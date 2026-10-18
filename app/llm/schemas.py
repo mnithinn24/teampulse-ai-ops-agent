@@ -140,3 +140,45 @@ class QueryAnswerOutput(BaseModel):
 
     answer: str = Field(..., description="Factual answer grounded strictly in collected work items")
 
+
+class SubTaskSpec(BaseModel):
+    """Specific technical subtask within a parent task."""
+
+    title: str = Field(..., description="Short, actionable title for the subtask")
+    description: str = Field(default="", description="Technical details, acceptance criteria, or steps")
+    estimated_hours: int = Field(default=4, ge=1, description="Estimated work hours (minimum 1)")
+    jira_key: Optional[str] = Field(default=None, description="Jira issue key once provisioned (e.g. KAN-12)")
+
+
+class TaskSpec(BaseModel):
+    """User story or technical task under an Epic."""
+
+    title: str = Field(..., description="Short summary of the task")
+    description: str = Field(default="", description="Technical requirements, architecture, or deliverables")
+    estimated_hours: int = Field(default=8, ge=1, description="Estimated work hours for this task")
+    subtasks: List[SubTaskSpec] = Field(default_factory=list, description="List of granular subtasks")
+    jira_key: Optional[str] = Field(default=None, description="Jira issue key once provisioned (e.g. KAN-11)")
+
+
+class EpicSpec(BaseModel):
+    """Major project milestone or architectural component."""
+
+    title: str = Field(..., description="Title of the Epic / major milestone")
+    description: str = Field(default="", description="High-level scope, objectives, and deliverables")
+    estimated_hours: int = Field(default=24, ge=1, description="Estimated hours across all tasks in this epic")
+    tasks: List[TaskSpec] = Field(default_factory=list, description="List of technical tasks under this epic")
+    jira_key: Optional[str] = Field(default=None, description="Jira issue key once provisioned (e.g. KAN-10)")
+
+
+class ProjectPlan(BaseModel):
+    """Complete project plan broken down into Epics, Tasks, Sub-tasks, and hour allocations."""
+
+    project_name: str = Field(..., description="Inferred or given project name")
+    summary: str = Field(..., description="Concise executive summary of the plan and architecture")
+    developers_count: int = Field(default=1, ge=1, description="Number of developers assigned")
+    weeks_duration: float = Field(default=1.0, ge=0.1, description="Project duration in weeks")
+    total_capacity_hours: int = Field(default=40, description="Total available hours (developers * weeks * 40)")
+    total_estimated_hours: int = Field(default=0, description="Sum of estimated hours across all tasks/epics")
+    epics: List[EpicSpec] = Field(default_factory=list, description="Epics making up the project")
+    generated_by: Optional[str] = Field(default=None, description="Engine or model that generated this plan")
+

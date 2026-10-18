@@ -29,6 +29,9 @@ Example: A developer opens a pull request on Monday. Nobody is assigned to revie
 | Scheduled jobs | Runs automated briefings at configured morning and evening times using APScheduler | [app/scheduler/jobs.py](file:///d:/teampulse/app/scheduler/jobs.py) |
 | Audit logging | Saves all runs, flags, and approved/dismissed actions into database tables | [app/db/models.py](file:///d:/teampulse/app/db/models.py) |
 | Dry-run mode | When `DRY_RUN_ACTIONS=true`, logs proposed write operations without creating real Jira issues or posting modifications | [app/config.py](file:///d:/teampulse/app/config.py), [app/agents/actions.py](file:///d:/teampulse/app/agents/actions.py) |
+| AI Project Planner | Deconstructs natural language project ideas (e.g. Medical RAG, 2 devs, 2 weeks) into Epics, Tasks, and Subtasks with hour estimation; automatically provisions Jira hierarchy | [app/agents/planner.py](file:///d:/teampulse/app/agents/planner.py), [app/api/routes/planner.py](file:///d:/teampulse/app/api/routes/planner.py) |
+| PR Completion Slack Alert | Webhook or alert when PR opens -> extracts Jira key, links Jira ticket in Slack, provides [Approve & Merge] / [Decline] buttons | [app/agents/pr_alert.py](file:///d:/teampulse/app/agents/pr_alert.py), [app/api/routes/github.py](file:///d:/teampulse/app/api/routes/github.py) |
+| One-Click Slack Auto-Merge | Clicking [Approve & Merge] merges the PR to main via GitHub REST API and transitions the linked Jira ticket to Done | [app/agents/pr_alert.py](file:///d:/teampulse/app/agents/pr_alert.py), [app/integrations/jira_client.py](file:///d:/teampulse/app/integrations/jira_client.py) |
 
 ## 4. How the Flow Works
 
@@ -68,11 +71,15 @@ teampulse/
 │   ├── agents/
 │   │   ├── actions.py       # Executes approved Slack actions and duplicate prevention
 │   │   ├── briefing.py      # Builds Slack Block Kit layout, warnings, and formatting
+│   │   ├── planner.py       # Phase 8: AI Project Planner & Jira issue hierarchy creator
+│   │   ├── pr_alert.py      # Phase 9: PR completion alert, Jira linking & merge/decline
 │   │   └── query.py         # Handles natural language queries, ranking, and counts
 │   ├── api/
 │   │   ├── main.py          # FastAPI app, lifespan setup, and health check route
 │   │   └── routes/
 │   │       ├── briefing.py  # Routes for manual trigger, run history, and /query
+│   │       ├── github.py    # Route for GitHub webhooks and manual PR alerts
+│   │       ├── planner.py   # Route for AI project planning (/project/plan)
 │   │       └── slack.py     # Routes for Slack button clicks and /teampulse slash commands
 │   ├── core/
 │   │   ├── constants.py     # Shared constants (urgency levels, status strings)
@@ -333,20 +340,112 @@ In any Slack channel where the bot is invited, type:
 - `/teampulse help` : Displays command instructions.
 - `/teampulse brief` : Manually triggers a briefing run in the background.
 - `/teampulse ask <question>` : Answers questions such as "How many stale pull requests are there?".
+- `/teampulse plan <description>` : Generates an AI project plan with Epics, Tasks, Subtasks, hours, and Jira tickets.
 - `/teampulse status` : Displays the status and latency of the most recent agent run.
 
-## 10. How to Test
+## 10. Phase 8: AI Project Planner
 
-Run the full automated test suite:
+You provide a high-level project description, developer headcount, and duration. TeamPulse calculates required work hours, balances capacity ($developers \times weeks \times 40\text{ hours}$), breaks the project down into Epics, Tasks, and Subtasks, and automatically provisions the hierarchy in Jira with parent links.
+
+### Trigger from Slack
+```text
+/teampulse plan Medical RAG with React UI, 2 developers, 2 weeks
+```
+TeamPulse replies in Slack with the complete project breakdown:
+- **Project**: Medical RAG
+- **Capacity**: 160h (2 developers $\times$ 2.0 weeks $\times$ 40h)
+- **Hierarchy Created**:
+  - `KAN-101`: [Epic] System Architecture & Data Pipeline (48h)
+    - `KAN-102`: [Task] Implement ingestion & chunking (24h)
+      - `KAN-103`: [Subtask] PDF parser & sanitization (12h)
+      - `KAN-104`: [Subtask] Vector database indexing (12h)
+  - `KAN-105`: [Epic] User Interface & Experience (40h)
+    - ...
+
+### Trigger via REST API
+```bash
+curl -X POST http://localhost:8000/project/plan \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_admin_api_key_here" \
+  -d '{
+    "description": "Medical RAG, 2 developers, 2 weeks",
+    "project_key": "KAN",
+    "dry_run": false
+  }'
+```
+
+To preview without creating Jira tickets, use `POST /project/plan/preview` or set `"dry_run": true`.
+
+## 11. Phase 9: PR Completion → Slack Alert & Merge/Decline Actions
+
+When a developer finishes work and opens a pull request on GitHub, TeamPulse immediately alerts the team in Slack, enriches the card with linked Jira ticket context, and provides interactive `[Approve & Merge]` and `[Decline]` buttons.
+
+### How It Works
+1. **Developer opens a PR**: e.g., branch `feature/KAN-42-rag-pipeline` or title `[KAN-42] Implement Medical RAG`.
+2. **Detection & Jira Linking**: TeamPulse extracts Jira key `KAN-42`, fetches the issue title and status from Jira, and formats a rich Slack Block Kit card.
+3. **Slack Alert**: Posted to the team's Slack channel:
+   ```text
+   🚀 Pull Request Ready for Review
+   Pull Request: test-org/medical-rag#101: [KAN-42] Implement Medical RAG
+   • Author: @developer | Branches: feature/KAN-42-rag-pipeline → main
+   • Linked Jira Ticket: KAN-42: Medical Document Ingestion (Status: In Progress)
+
+   [ Approve & Merge ]   [ Decline ]
+   ```
+4. **Approve & Merge (Phase 10: Auto-Merge)**: Clicking `Approve & Merge` checks authorization, merges the PR to `main` via GitHub REST API, automatically transitions the linked Jira ticket to **Done** via Jira API v3 workflow transitions, posts a confirmation comment to Jira, logs to `actions_taken`, and updates the Slack message in place to `:white_check_mark: *Approved & Merged by <@user> (SHA: <hash>) & marked Jira KAN-42 as Done*`.
+5. **Decline**: Clicking `Decline` closes the PR, posts a status comment to Jira, and replaces buttons with `:x: *Declined by <@user>*`.
+6. **Dry Run**: When `DRY_RUN_ACTIONS=true`, write operations are simulated and logged without modifying GitHub or Jira.
+
+### Webhook Setup
+In GitHub Repository Settings $\to$ **Webhooks**:
+- **Payload URL**: `https://<ngrok-domain>/github/webhook`
+- **Content type**: `application/json`
+- **Secret**: Your configured `GITHUB_WEBHOOK_SECRET`
+- **Events**: Pull requests (`opened`, `reopened`, `ready_for_review`)
+
+## 12. How to Test & Verify (Phase 11)
+
+### Complete Automated Unit Tests
+Run the comprehensive test suite locally. All 208 unit tests execute safely in-memory with simulated data without touching external services:
 ```bash
 pytest -q
 ```
 Expected output:
 ```text
-170 passed, 1 warning in 12.09s
+208 passed, 3 warnings in 14.88s
 ```
 
-Run the offline deterministic evaluation suite:
+### End-to-End Local Feature Simulator
+Run the standalone simulation tool to test all 10 features end-to-end locally using synthetic data without needing Slack, Jira, or GitHub credentials:
+```bash
+python scripts/simulate_all_features.py
+```
+Output:
+```text
+===========================================================================
+         TeamPulse Phase 11: End-to-End Local Simulation Suite
+===========================================================================
+Safety Mode: Isolated in-memory SQLite | Dry-Run Active | 0 Network Calls
+
+[01/10] 1 & 2: Ingestion & Stale Detection .................. [PASS] (0.06ms)
+[02/10] 3: Grounded Analysis & Hallucination Guard .......... [PASS] (0.12ms)
+[03/10] 4: Slack Morning Briefing Block Kit ................. [PASS] (0.4ms)
+[04/10] 5: Interactive Actions & Idempotency ................ [PASS] (17.91ms)
+[05/10] 6: Plain-Language Query Engine & Shield ............. [PASS] (195.33ms)
+[06/10] 7: AI Project Planner (Jira Hierarchy) .............. [PASS] (2380.9ms)
+[07/10] 8: PR Completion Slack Alert & Jira Link ............ [PASS] (1.62ms)
+[08/10] 9: One-Click Slack Auto-Merge & Done ................ [PASS] (7.73ms)
+[09/10] 10: Decline PR Action & State Sync .................. [PASS] (4.69ms)
+[10/10] 11: Security & Network Isolation .................... [PASS] (0.03ms)
+
+===========================================================================
+Summary: 10/10 Features Verified (100.0%) | Time: 2.61s
+Report saved to: simulations/simulation_report.json
+===========================================================================
+```
+
+### Offline Deterministic Evaluation Suite
+Run the 48-case offline evaluation suite:
 ```bash
 python evals/run_eval.py
 ```

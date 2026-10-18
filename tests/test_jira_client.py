@@ -269,3 +269,35 @@ async def test_jira_error_wrapping() -> None:
 
         assert isinstance(exc_info.value, JiraError)
         assert "404" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_update_issue_v3_success() -> None:
+    """Test updating an issue on API v3 using PUT /rest/api/3/issue/{key}."""
+    updated_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT" and "/rest/api/3/issue/OPS-200" in str(request.url):
+            payload = request.read().decode("utf-8")
+            updated_payloads.append(payload)
+            return httpx.Response(204)  # Jira returns 204 No Content on successful PUT
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as mock_http:
+        client = JiraClient(
+            base_url="https://example.atlassian.net",
+            client=mock_http,
+        )
+        res = await client.update_issue(
+            issue_key="OPS-200",
+            summary="Updated Incident Title",
+            description="Updated details",
+            estimated_hours=16,
+        )
+
+    assert res == {}
+    assert len(updated_payloads) == 1
+    assert "Updated Incident Title" in updated_payloads[0]
+    assert "Estimated Hours: 16h" in updated_payloads[0]
+

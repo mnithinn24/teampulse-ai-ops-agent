@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-10-17T07:02:48.608404+00:00",
+  "total_tested": 10,
+  "total_passed": 10,
+  "pass_rate_percent": 100.0,
+  "total_duration_sec": 0.191,
+  "results": [
+    {
+      "feature": "1 & 2: Ingestion & Stale Detection",
+      "status": "PASS",
+      "duration_ms": 0.04,
+      "details": "3 PRs (2 stale), 2 Jira issues (1 stale)"
+    },
+    {
+      "feature": "3: Grounded Analysis & Hallucination Guard",
+      "status": "PASS",
+      "duration_ms": 0.07,
+      "details": "3 flags generated; Hallucinated IDs purged successfully"
+    },
+    {
+      "feature": "4: Slack Morning Briefing Block Kit",
+      "status": "PASS",
+      "duration_ms": 0.11,
+      "details": "Generated 6 Block Kit elements with action controls"
+    },
+    {
+      "feature": "5: Interactive Actions & Idempotency",
+      "status": "PASS",
+      "duration_ms": 15.42,
+      "details": "Flag #1 approved idempotently; double-click shielded"
+    },
+    {
+      "feature": "6: Plain-Language Query Engine & Shield",
+      "status": "PASS",
+      "duration_ms": 112.65,
+      "details": "Author query, count query, and out-of-scope rejection verified"
+    },
+    {
+      "feature": "7: AI Project Planner (Jira Hierarchy)",
+      "status": "PASS",
+      "duration_ms": 53.08,
+      "details": "4 Epics, 160h estimated capacity, dry-run Jira mapped"
+    },
+    {
+      "feature": "8: PR Completion Slack Alert & Jira Link",
+      "status": "PASS",
+      "duration_ms": 0.72,
+      "details": "Parsed branch feature/KAN-42-medical-rag-upload -> Jira KAN-42; Alert card rendered with Approve/Decline buttons"
+    },
+    {
+      "feature": "9: One-Click Slack Auto-Merge & Done",
+      "status": "PASS",
+      "duration_ms": 5.33,
+      "details": "Merged GitHub PR to main, transitioned Jira to Done, audit logged"
+    },
+    {
+      "feature": "10: Decline PR Action & State Sync",
+      "status": "PASS",
+      "duration_ms": 3.13,
+      "details": "Declined and closed PR #42, Jira notified, audit logged"
+    },
+    {
+      "feature": "11: Security & Network Isolation",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "details": "In-memory database verified; 100% simulated, dry-run safety confirmed"
+    }
+  ]
+}

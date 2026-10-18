@@ -11,6 +11,13 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.agents.actions import execute_approved_action
+from app.agents.planner import (
+    format_plan_for_slack,
+    generate_project_plan,
+    parse_plan_request_text,
+    provision_jira_plan,
+)
+from app.agents.pr_alert import handle_pr_approval_action
 from app.agents.query import handle_plain_language_query
 from app.config import get_settings
 from app.core.constants import ITEM_TYPE_JIRA_ISSUE
@@ -104,6 +111,152 @@ def replace_action_buttons_in_blocks(
     return new_blocks
 
 
+def replace_pr_action_buttons_in_blocks(
+    blocks: List[Dict[str, Any]],
+    status_text: str,
+) -> List[Dict[str, Any]]:
+    """Replace PR action buttons block with a resolution context block.
+
+    Args:
+        blocks: List of Slack Block Kit blocks.
+        status_text: Status resolution text (e.g. 'Approved & Merged by <@U123>').
+
+    Returns:
+        New updated list of blocks.
+    """
+    new_blocks = []
+    for block in blocks:
+        block_id = block.get("block_id", "")
+        if block_id.startswith("pr_actions_") or block.get("type") == "actions":
+            new_blocks.append({
+                "type": "context",
+                "block_id": "pr_resolution_context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": status_text,
+                    }
+                ],
+            })
+        else:
+            new_blocks.append(block)
+    return new_blocks
+
+
+async def process_pr_slack_interaction(
+    action_id: str,
+    raw_value: str,
+    user_id: str,
+    response_url: Optional[str],
+    channel_id: Optional[str],
+    message_ts: Optional[str],
+    blocks: List[Dict[str, Any]],
+    session_factory: Optional[Any] = None,
+    slack_client: Optional[SlackClient] = None,
+) -> None:
+    """Process PR Approve & Merge or Decline button click."""
+    settings = get_settings()
+    approvers = settings.slack_approver_ids
+    if approvers and user_id not in approvers:
+        logger.warning("Unauthorized user %s attempted PR action %s", user_id, action_id)
+        await send_ephemeral_message(
+            response_url=response_url,
+            channel_id=channel_id,
+            user_id=user_id,
+            text=f":warning: <@{user_id}>, you are not authorized to approve or decline pull requests.",
+            slack_client=slack_client,
+        )
+        return
+
+    try:
+        outcome = await handle_pr_approval_action(
+            action_id=action_id,
+            value=raw_value,
+            user_id=user_id,
+            session_factory=session_factory,
+        )
+        if action_id == "pr_approve_and_merge":
+            resolution_text = f":white_check_mark: *Approved & Merged by <@{user_id}>* — {outcome}"
+        else:
+            resolution_text = f":x: *Declined by <@{user_id}>* — {outcome}"
+    except Exception as exc:
+        logger.error("Failed to execute PR action %s: %s", action_id, exc)
+        resolution_text = f":warning: *Action failed for <@{user_id}>:* {exc}"
+
+    if channel_id and message_ts:
+        updated_blocks = replace_pr_action_buttons_in_blocks(blocks, resolution_text)
+        client = slack_client or SlackClient()
+        try:
+            await client.update_message(
+                channel=channel_id,
+                ts=message_ts,
+                text=resolution_text,
+                blocks=updated_blocks,
+            )
+        except Exception as exc:
+            logger.error("Failed to update Slack message for PR action: %s", exc)
+
+
+async def process_jira_task_slack_interaction(
+    action_id: str,
+    issue_key: str,
+    user_id: str,
+    channel_id: Optional[str],
+    message_ts: Optional[str],
+    blocks: List[Dict[str, Any]],
+    jira_client: Optional[JiraClient] = None,
+    slack_client: Optional[SlackClient] = None,
+) -> None:
+    """Process Jira task Approve & Verify or Decline & Reopen button click."""
+    from datetime import datetime
+    now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+    client = jira_client or JiraClient()
+    try:
+        if action_id == "jira_approve_task":
+            comment = f"TeamPulse: Task approved & verified by Slack user <@{user_id}> at {now_str}."
+            await client.add_comment(issue_key, comment)
+            resolution_text = f":white_check_mark: *Task Approved & Verified by <@{user_id}>* at `{now_str}` — Marked verified in Jira ({issue_key})"
+        else:
+            # Reopen issue: find transition back to In Progress (21) or To Do (11)
+            transitions = await client.get_transitions(issue_key)
+            reopen_tid = None
+            for t in transitions:
+                name_l = t.get("name", "").lower()
+                to_name = t.get("to", {}).get("name", "").lower()
+                if "in progress" in name_l or "in progress" in to_name:
+                    reopen_tid = str(t["id"])
+                    break
+                elif "to do" in name_l or "to do" in to_name:
+                    reopen_tid = str(t["id"])
+
+            if reopen_tid:
+                await client.transition_issue(issue_key, reopen_tid)
+            from app.api.routes.jira import mark_issue_reopened
+            mark_issue_reopened(issue_key)
+            comment = f"TeamPulse: Task declined by Slack user <@{user_id}> at {now_str}. Reopened for revisions."
+            await client.add_comment(issue_key, comment)
+            resolution_text = f":x: *Task Declined by <@{user_id}>* at `{now_str}` — Reopened back to In Progress in Jira ({issue_key})"
+    except Exception as exc:
+        logger.error("Failed to execute Jira task action %s for %s: %s", action_id, issue_key, exc)
+        resolution_text = f":warning: *Action failed for <@{user_id}>:* {exc}"
+    finally:
+        if jira_client is None:
+            await client.close()
+
+    if channel_id and message_ts:
+        updated_blocks = replace_pr_action_buttons_in_blocks(blocks, resolution_text)
+        s_client = slack_client or SlackClient()
+        try:
+            await s_client.update_message(
+                channel=channel_id,
+                ts=message_ts,
+                text=resolution_text,
+                blocks=updated_blocks,
+            )
+        except Exception as exc:
+            logger.error("Failed to update Slack message for Jira task action: %s", exc)
+
+
 async def process_slack_interaction(
     payload: Dict[str, Any],
     session_factory: Optional[Any] = None,
@@ -112,7 +265,7 @@ async def process_slack_interaction(
 ) -> None:
     """Process Slack interaction payload in the background.
 
-    Idempotently handles Approve and Dismiss button clicks.
+    Idempotently handles Approve and Dismiss button clicks for flags, PRs, and Jira tasks.
     """
     settings = get_settings()
     user = payload.get("user", {})
@@ -131,7 +284,36 @@ async def process_slack_interaction(
 
     action = actions[0]
     action_id = action.get("action_id")
-    raw_value = action.get("value")
+    raw_value = str(action.get("value") or "")
+
+    # Handle Jira Task Approve & Verify / Decline interactions
+    if action_id in ("jira_approve_task", "jira_decline_task"):
+        await process_jira_task_slack_interaction(
+            action_id=action_id,
+            issue_key=raw_value,
+            user_id=user_id,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            blocks=blocks,
+            jira_client=jira_client,
+            slack_client=slack_client,
+        )
+        return
+
+    # Phase 9: Handle PR Approve & Merge / Decline interactions
+    if action_id in ("pr_approve_and_merge", "pr_decline"):
+        await process_pr_slack_interaction(
+            action_id=action_id,
+            raw_value=raw_value,
+            user_id=user_id,
+            response_url=response_url,
+            channel_id=channel_id,
+            message_ts=message_ts,
+            blocks=blocks,
+            session_factory=session_factory,
+            slack_client=slack_client,
+        )
+        return
 
     try:
         flag_id = int(raw_value)
@@ -425,6 +607,37 @@ async def _run_slash_query_background(question: str, response_url: str) -> None:
         )
 
 
+async def _run_slash_plan_background(plan_text: str, response_url: str) -> None:
+    """Generate AI project plan in background and post results to Slack."""
+    settings = get_settings()
+    try:
+        parsed = parse_plan_request_text(plan_text)
+        devs = parsed["developers"]
+        wks = parsed["weeks"]
+        desc = parsed["description"]
+
+        plan = await generate_project_plan(description=desc, developers=devs, weeks=wks)
+        provisioned = await provision_jira_plan(plan=plan)
+        formatted_slack_msg = format_plan_for_slack(provisioned, dry_run=settings.dry_run_actions)
+
+        await _post_command_response(
+            response_url,
+            {
+                "response_type": "in_channel",
+                "text": formatted_slack_msg,
+            },
+        )
+    except Exception as exc:
+        logger.error("Background slash project planning failed: %s", exc)
+        await _post_command_response(
+            response_url,
+            {
+                "response_type": "ephemeral",
+                "text": f":x: Failed to generate project plan: {exc}",
+            },
+        )
+
+
 @router.post("/commands")
 async def handle_slack_commands(
     request: Request,
@@ -523,6 +736,40 @@ async def handle_slack_commands(
             status_code=status.HTTP_200_OK,
         )
 
+    elif text_lower.startswith("plan"):
+        plan_text = text[4:].strip()
+        if not plan_text:
+            return Response(
+                content=json.dumps({
+                    "response_type": "ephemeral",
+                    "text": "Please provide a project description. Example: `/teampulse plan Medical RAG, 2 developers, 2 weeks`",
+                }),
+                media_type="application/json",
+                status_code=status.HTTP_200_OK,
+            )
+
+        settings = get_settings()
+        under_limit = await check_user_rate_limit(user_id, settings.query_rate_limit_per_minute)
+        if not under_limit:
+            return Response(
+                content=json.dumps({
+                    "response_type": "ephemeral",
+                    "text": f"Rate limit exceeded: maximum {settings.query_rate_limit_per_minute} questions per minute. Please try again later.",
+                }),
+                media_type="application/json",
+                status_code=status.HTTP_200_OK,
+            )
+
+        background_tasks.add_task(_run_slash_plan_background, plan_text, response_url)
+        return Response(
+            content=json.dumps({
+                "response_type": "ephemeral",
+                "text": f":calendar: Generating AI Project Plan for: \"{plan_text}\" (Epics, Tasks, Subtasks & Jira hierarchy)...",
+            }),
+            media_type="application/json",
+            status_code=status.HTTP_200_OK,
+        )
+
     elif text_lower == "status":
         with get_db_session() as session:
             latest = session.scalars(select(AgentRun).order_by(AgentRun.id.desc())).first()
@@ -560,6 +807,7 @@ async def handle_slack_commands(
             ":wave: *TeamPulse Ops Agent Commands:*\n"
             "• `/teampulse brief` — Trigger a fresh briefing run\n"
             "• `/teampulse ask <question>` — Ask an operational question about PRs or tickets\n"
+            "• `/teampulse plan <description>` — Generate an AI project plan & provision Jira hierarchy\n"
             "• `/teampulse status` — Display status and metrics of the latest run\n"
             "• `/teampulse help` — Show this help message"
         )

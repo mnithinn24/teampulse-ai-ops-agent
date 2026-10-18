@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TeamPulse AI Project Planner — Jira Ticket Architect</title>
+  <meta name="description" content="AI Ops Project Planner: decompose software requirements into Epics, Tasks, and Subtasks with automatic developer hour calculations and Jira Cloud provisioning.">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+  <!-- Top Glass Navigation -->
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="/ui" class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>TeamPulse <span style="font-weight: 400; opacity: 0.7;">Planner</span></h1>
+          <p>AI Ops Project Architect & Jira Provisioner</p>
+        </div>
+      </a>
+
+      <div class="nav-actions">
+        <div class="status-badge">
+          <span class="status-dot"></span>
+          <span>System Online</span>
+        </div>
+        <span class="badge-pill" id="nav-model-pill">Gemini & Fallback Engine</span>
+        <button class="btn-secondary" id="btn-open-settings" title="API Key & Backend Settings">
+          ⚙️ Settings
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Workspace -->
+  <main class="main-wrapper">
+    <div class="workspace-grid">
+
+      <!-- LEFT COLUMN: Project Specification & Resource Calculator -->
+      <section class="glass-panel" aria-labelledby="form-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="form-heading" class="panel-title">1. Define Project & Resources</h2>
+            <p class="panel-subtitle">Provide your technical goals, timeline, and team size</p>
+          </div>
+        </div>
+
+        <!-- Quick Template Chips -->
+        <div class="form-group">
+          <label class="form-label">
+            <span>⚡ Quick Starter Templates</span>
+            <span style="font-size: 0.75rem; color: #94A3B8;">1-Click Fill</span>
+          </label>
+          <div class="template-chips">
+            <button type="button" class="chip" onclick="loadTemplate('rag')">🏥 Medical RAG App</button>
+            <button type="button" class="chip" onclick="loadTemplate('auth')">🛡️ OAuth2 & SSO Migration</button>
+            <button type="button" class="chip" onclick="loadTemplate('billing')">💳 Stripe Billing Service</button>
+            <button type="button" class="chip" onclick="loadTemplate('analytics')">📊 Realtime Ops Dashboard</button>
+          </div>
+        </div>
+
+        <!-- Project Overview / Description Textarea -->
+        <div class="form-group">
+          <label for="project-description" class="form-label">
+            <span>Project Scope & Architecture</span>
+            <span class="val-tag">Required</span>
+          </label>
+          <textarea 
+            id="project-description" 
+            class="form-control" 
+            placeholder="Describe what needs to be built, key user flows, architecture, databases, APIs, and frontend. E.g.:&#10;&#10;Build an enterprise Medical RAG system where doctors can upload patient EHR PDF documents, index into vector embeddings database, and ask clinical questions with cited answers using a modern React frontend and FastAPI backend."
+            required
+          ></textarea>
+        </div>
+
+        <!-- Resources: Developers Slider -->
+        <div class="form-group">
+          <div class="form-label">
+            <span>Assigned Developers (Resources)</span>
+            <span class="val-tag" id="devs-value">2 Devs</span>
+          </div>
+          <div class="slider-control">
+            <span style="font-size: 0.8rem; color: var(--text-dim);">1</span>
+            <input type="range" id="devs-slider" min="1" max="10" step="1" value="2" aria-label="Number of developers">
+            <span style="font-size: 0.8rem; color: var(--text-dim);">10</span>
+          </div>
+        </div>
+
+        <!-- Timeline: Weeks Slider -->
+        <div class="form-group">
+          <div class="form-label">
+            <span>Project Timeline (Duration)</span>
+            <span class="val-tag" id="weeks-value">2.0 Wks</span>
+          </div>
+          <div class="slider-control">
+            <span style="font-size: 0.8rem; color: var(--text-dim);">0.5</span>
+            <input type="range" id="weeks-slider" min="0.5" max="8" step="0.5" value="2" aria-label="Project duration in weeks">
+            <span style="font-size: 0.8rem; color: var(--text-dim);">8</span>
+          </div>
+        </div>
+
+        <!-- Live Capacity Visualizer -->
+        <div class="capacity-card">
+          <div class="capacity-title">
+            <span>📊 CALCULATED WORK CAPACITY</span>
+            <span id="capacity-hours" style="font-weight: 700; color: #fff;">160 Hours</span>
+          </div>
+          <div class="capacity-progress-bar">
+            <div class="capacity-progress-fill" id="capacity-fill"></div>
+          </div>
+          <p class="capacity-subtext" id="capacity-formula">
+            2 Devs × 2 Wks × 40h/wk = 160h capacity (~128h coding)
+          </p>
+        </div>
+
+        <!-- Settings: Jira Key and Dry Run -->
+        <div class="settings-row">
+          <div>
+            <label for="jira-project-key" class="form-label">Jira Project Key</label>
+            <input type="text" id="jira-project-key" class="form-control" value="KAN" placeholder="e.g. KAN, PROJ" style="text-transform: uppercase;">
+          </div>
+          <div>
+            <label class="form-label">Safety Mode</label>
+            <label class="mode-toggle" title="Preview keys safely without modifying Jira Cloud">
+              <span style="font-size: 0.85rem; font-weight: 500;">🧪 Dry Run</span>
+              <input type="checkbox" id="dry-run-checkbox" checked>
+            </label>
+          </div>
+        </div>
+
+        <!-- CTA Generate Button -->
+        <button type="button" class="btn-primary" id="btn-generate">
+          <span>✨ Generate AI Project Plan & Jira Tickets</span>
+        </button>
+
+        <!-- Progress Spinner & Status Box -->
+        <div class="loading-box" id="loading-box">
+          <span class="spinner"></span>
+          <span class="loading-step" id="loading-status-text">1. Analyzing project requirements and architecture scope...</span>
+        </div>
+      </section>
+
+      <!-- RIGHT COLUMN: Generated Jira Hierarchy Output Dashboard -->
+      <section class="glass-panel output-panel" aria-labelledby="output-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="output-heading" class="panel-title">2. Generated Jira Architecture</h2>
+            <p class="panel-subtitle">Decomposed Epics, Tasks, Subtasks & Developer Hours</p>
+          </div>
+        </div>
+
+        <!-- Empty State Placeholder -->
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">📐</div>
+          <h3>Ready to Architect Your Project</h3>
+          <p>
+            Choose a quick template on the left or write your project requirements, adjust resources, and click <strong>Generate AI Project Plan</strong> to produce a complete Jira ticket hierarchy.
+          </p>
+        </div>
+
+        <!-- Dynamic Results Container -->
+        <div id="plan-results" style="display: none;">
+          <!-- Plan Executive Summary Bar -->
+          <div class="plan-summary-bar" id="plan-summary-bar"></div>
+
+          <!-- Epics Accordion Container -->
+          <div id="epics-container"></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- API Key & Settings Modal -->
+  <div class="modal-overlay" id="api-modal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>⚙️ TeamPulse Settings</h3>
+        <button type="button" class="close-btn" id="btn-close-modal">&times;</button>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+        Configure your <code>ADMIN_API_KEY</code> used for backend API authorization.
+      </p>
+      <div class="form-group">
+        <label for="modal-api-key" class="form-label">Admin API Key</label>
+        <input type="password" id="modal-api-key" class="form-control" placeholder="your-secret-admin-api-key">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button type="button" class="btn-primary" id="btn-save-key" style="width: auto; padding: 10px 18px;">
+          Save Key
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Ticket / Task Modal -->
+  <div class="modal-overlay" id="edit-ticket-modal">
+    <div class="modal-box edit-modal-box">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 1.3rem;">✏️</span>
+          <div>
+            <h3 id="edit-modal-title-heading" style="margin: 0; font-size: 1.1rem;">Edit Work Item</h3>
+            <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
+              <span id="edit-modal-item-badge" class="badge-pill">Task</span>
+              <span id="edit-modal-key-badge" class="epic-tag" style="font-size: 0.72rem; padding: 2px 8px;">KAN-67</span>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="close-btn" id="btn-close-edit-modal">&times;</button>
+      </div>
+
+      <div class="edit-modal-body" style="margin-top: 16px;">
+        <div class="form-group">
+          <label for="edit-title-input" class="form-label">
+            <span>Title / Summary</span>
+            <span class="val-tag">Required</span>
+          </label>
+          <input type="text" id="edit-title-input" class="form-control" placeholder="Ticket title / summary" required>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-hours-input" class="form-label">
+            <span>Estimated Work Hours</span>
+            <span style="font-size: 0.75rem; color: #94A3B8;">Auto-balances project capacity</span>
+          </label>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <input type="number" id="edit-hours-input" class="form-control" min="1" max="1000" style="max-width: 140px;" required>
+            <span style="color: var(--text-muted); font-size: 0.85rem; font-weight: 500;">Hours</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-desc-input" class="form-label">
+            <span>Description & Acceptance Details</span>
+          </label>
+          <textarea id="edit-desc-input" class="form-control" rows="4" placeholder="Detailed technical scope, deliverables, or acceptance criteria..."></textarea>
+        </div>
+
+        <div id="edit-sync-notice" class="sync-notice">
+          <span id="edit-sync-icon">⚡</span>
+          <span id="edit-sync-text">Changes will update the plan and synchronize to Jira Cloud.</span>
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
+        <button type="button" class="btn-secondary" id="btn-cancel-edit">Cancel</button>
+        <button type="button" class="btn-primary" id="btn-save-edit" style="width: auto; padding: 10px 22px;">
+          <span id="btn-save-edit-text">💾 Save & Sync</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

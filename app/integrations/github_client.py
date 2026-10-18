@@ -211,12 +211,20 @@ class GitHubClient:
         backoff_factor=2.0,
         retryable_exceptions=(httpx.RequestError, httpx.HTTPStatusError),
     )
-    async def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """Execute a rate-limited and cached HTTP GET request against the GitHub API.
+    async def _request(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        method: str = "GET",
+        json_data: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Execute a rate-limited and cached HTTP request against the GitHub API.
 
         Args:
             endpoint: API endpoint relative or absolute (e.g. '/repos/owner/repo/pulls').
             params: Optional query parameters.
+            method: HTTP method ('GET', 'POST', 'PUT', 'PATCH').
+            json_data: Optional JSON payload.
 
         Returns:
             Parsed JSON response body or cached data.
@@ -238,17 +246,23 @@ class GitHubClient:
             )
 
         url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
-        cache_key = f"{url}?{sorted(params.items()) if params else ''}"
+        cache_key = f"{url}?{sorted(params.items()) if params else ''}" if method.upper() == "GET" else None
 
         cached_etag: Optional[str] = None
-        if cache_key in self._etag_cache:
+        if cache_key and cache_key in self._etag_cache:
             cached_etag, _ = self._etag_cache[cache_key]
 
         headers = self._get_headers(etag=cached_etag)
 
         async with self.rate_limiter:
             try:
-                response = await self._client.get(url, headers=headers, params=params)
+                response = await self._client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json_data,
+                )
             except httpx.RequestError as exc:
                 err_clean = format_log_error(exc)
                 log_msg = f"Network error requesting {url}: {err_clean}"
@@ -258,7 +272,7 @@ class GitHubClient:
                 raise
 
         # Check for conditional cache hit
-        if response.status_code == 304 and cache_key in self._etag_cache:
+        if response.status_code == 304 and cache_key and cache_key in self._etag_cache:
             logger.debug("ETag cache hit for %s", url)
             _, cached_data = self._etag_cache[cache_key]
             return cached_data
@@ -302,12 +316,48 @@ class GitHubClient:
                 details={"status_code": response.status_code, "url": url},
             )
 
+        if response.status_code == 204 or not response.content:
+            return {}
+
         data = response.json()
-        etag = response.headers.get("ETag")
-        if etag:
-            self._etag_cache[cache_key] = (etag, data)
+        if cache_key:
+            etag = response.headers.get("ETag")
+            if etag:
+                self._etag_cache[cache_key] = (etag, data)
 
         return data
+
+    async def get_pull_request(self, repo: str, pull_number: int) -> Dict[str, Any]:
+        """Fetch details of a specific pull request."""
+        endpoint = f"/repos/{repo}/pulls/{pull_number}"
+        return await self._request(endpoint, method="GET")
+
+    async def merge_pull_request(
+        self,
+        repo: str,
+        pull_number: int,
+        commit_title: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        merge_method: str = "merge",
+    ) -> Dict[str, Any]:
+        """Merge a pull request via PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge."""
+        endpoint = f"/repos/{repo}/pulls/{pull_number}/merge"
+        payload: Dict[str, Any] = {"merge_method": merge_method}
+        if commit_title:
+            payload["commit_title"] = commit_title
+        if commit_message:
+            payload["commit_message"] = commit_message
+        return await self._request(endpoint, method="PUT", json_data=payload)
+
+    async def close_pull_request(self, repo: str, pull_number: int) -> Dict[str, Any]:
+        """Close a pull request via PATCH /repos/{owner}/{repo}/pulls/{pull_number}."""
+        endpoint = f"/repos/{repo}/pulls/{pull_number}"
+        return await self._request(endpoint, method="PATCH", json_data={"state": "closed"})
+
+    async def add_pr_comment(self, repo: str, pull_number: int, comment: str) -> Dict[str, Any]:
+        """Add a comment to a pull request via POST /repos/{owner}/{repo}/issues/{pull_number}/comments."""
+        endpoint = f"/repos/{repo}/issues/{pull_number}/comments"
+        return await self._request(endpoint, method="POST", json_data={"body": comment})
 
     async def fetch_open_prs(self, repo: str) -> List[PullRequest]:
         """Fetch all open pull requests for a given repository.
