@@ -96,9 +96,9 @@ TeamPulse is organized into **6 purpose-driven agents**. Each agent owns a disti
 | Agent | Module | Primary Trigger | Core Responsibility |
 | :--- | :--- | :--- | :--- |
 | **1. Daily Briefing & Triage Agent** | `app/agents/briefing.py`<br/>`app/graph/pipeline.py` | APScheduler (09:30 / 17:30)<br/>`/teampulse brief`<br/>`POST /briefing/trigger` | Fetches PRs & Jira tickets, detects stale work (>7d PR, >14d ticket), invokes LLM to triage urgency, grounds evidence, and posts interactive Slack briefing. |
-| **2. Interactive Action Agent** | `app/agents/actions.py`<br/>`app/api/routes/slack.py` | Slack Button Click (`approve_action` / `dismiss_action`) on `POST /slack/interactions` | Validates HMAC-SHA256 signature, enforces idempotency against double-clicks, checks duplicate Jira tickets, adds comments or creates triage tickets in Jira, logs audit records in `actions_taken` (`dry_run`, `executed`, `skipped_duplicate`, `dismissed`, `failed`), and updates Slack message in-place. |
+| **2. Interactive Action Agent** | `app/agents/actions.py`<br/>`app/api/routes/slack.py` | Slack Button Click (`approve_action` / `dismiss_action`) on `POST /slack/interactions` | Validates HMAC-SHA256 signature, enforces idempotency against double-clicks, checks duplicate Jira tickets, adds comments or creates triage tickets in Jira, logs audit records in `actions_taken` (`dry_run`, `executed`, `skipped_duplicate`, `dismissed`, `failed`, `refused`), and updates Slack message in-place. |
 | **3. AI Project Planner Agent** | `app/agents/planner.py`<br/>`app/api/routes/planner.py` | Web UI (`/`)<br/>`/teampulse plan <desc>`<br/>`POST /project/plan` | Deconstructs free-form project ideas into 3-5 Epics, Tasks, and Subtasks. Calculates team capacity hours ($Devs \times Weeks \times 40h$) and scales hours proportionally to capacity (capacity allocations, not empirical estimates). Provisions complete hierarchy in Jira Cloud with one click. |
-| **4. PR Completion & Code Review Alert** | `app/agents/pr_alert.py`<br/>`app/api/routes/github.py` | GitHub Webhook (`pull_request.opened`)<br/>`POST /github/pr/alert`<br/>`POST /github/pr/merge` | Extracts Jira keys (`[KAN-123]`) from PR title/branch, links Jira ticket in Slack, provides direct PR link, and enables `[ Approve & Merge ]` / `[ Decline ]` action buttons with 5 merge safety checks (approver list authorization, open state, mergeability, CI checks, dry run). Marks Jira ticket as Done on merge and records `jira_auto_done` in `actions_taken`. |
+| **4. PR Completion & Code Review Alert** | `app/agents/pr_alert.py`<br/>`app/api/routes/github.py` | GitHub Webhook (`pull_request.opened`)<br/>`POST /github/pr/alert`<br/>`POST /github/pr/merge` | Extracts Jira keys (`[KAN-123]`) from PR title/branch, links Jira ticket in Slack, provides direct PR link, and enables `[ Approve & Merge ]` / `[ Decline ]` action buttons with 5 checks before the merge (approver list, dry-run mode, PR state, conflicts, CI), then a post-merge step. Marks Jira ticket as Done on merge and records `jira_auto_done` in `actions_taken`. |
 | **5. Jira Task Done & Verification Agent** | `app/api/routes/jira.py`<br/>`app/api/routes/slack.py` | 15s Background Poller<br/>Jira Webhook (`jira:issue_updated`) | Automatically detects when developer marks ticket "Done" in Jira. Resolves GitHub PR search URL (`.../pulls?q=is:pr+KEY`), posts review card to Slack with `[ 🔍 Open Pull Request ↗ ]`, `[ Approve & Verify ]`, and `[ Decline & Reopen ]`. Skips tickets TeamPulse moved itself (`jira_auto_done`, `jira_task_verified`) or already alerted (`jira_task_alerted`). |
 | **6. Grounded Query Agent & Shield** | `app/agents/query.py`<br/>`app/api/routes/briefing.py` | `/teampulse ask <query>`<br/>`POST /query` | Answers operational questions (ranking by age, counting by author) over 100% real collected data. Uses Python for 100% of arithmetic, sorting, and counting. Governed by `QUERY_LLM_REPHRASE`: when `false` (default), returns the code-built answer directly (`model_used="code"`); when `true`, the LLM rephrases the answer with grounding verification. Shields against non-operational prompts. |
 
@@ -142,7 +142,7 @@ sequenceDiagram
 3. **Analyze Node**: Filters out items flagged in the last 24 hours. Passes new stale items to the LLM Router.
 4. **Grounding Defense**: Every item ID returned by the LLM is checked against actual fetched objects. If an ID was invented, it is immediately discarded. Real author names and ages overwrite model text.
 5. **Slack Delivery & Persistence**: Flags are saved to the database in `pending` status *before* posting so their generated database IDs can be bound into Slack interactive button action values (`value=str(flag.id)`). Then the Block Kit briefing is posted to Slack, and the message timestamp (`slack_ts`) is committed.
-6. **Human Approval**: The lead reviews flags in Slack and clicks `[ Approve ]` or `[ Dismiss ]`. TeamPulse executes the action (adds comment or creates Jira ticket), records an audit log entry in `actions_taken` (`dry_run`, `executed`, `skipped_duplicate`, `dismissed`, or `failed`), and updates the Slack message in place.
+6. **Human Approval**: The lead reviews flags in Slack and clicks `[ Approve ]` or `[ Dismiss ]`. TeamPulse executes the action (adds comment or creates Jira ticket), records an audit log entry in `actions_taken` (`dry_run`, `executed`, `skipped_duplicate`, `dismissed`, `failed`, or `refused`), and updates the Slack message in place.
 
 ---
 
@@ -252,15 +252,15 @@ sequenceDiagram
     TP->>Slack: Posts PR Review Card (PR Link + Jira Link + [Approve & Merge] / [Decline])
     Lead->>Git: Clicks PR link to review code changes
     Lead->>Slack: Clicks [ Approve & Merge ]
-    Note over TP: Runs 5-point Merge Safety Checks
+    Note over TP: 5 checks before merge, then post-merge step
     TP->>Git: PUT /repos/{repo}/pulls/42/merge (Merge to main)
     TP->>Jira: Transition KAN-10 to "Done" + Adds timestamped merge comment
     TP->>TP: Records ActionTaken(action_type="jira_auto_done", status="executed")
     TP->>Slack: Replaces buttons with "✅ Approved & Merged by @Lead at YYYY-MM-DD HH:MM"
 ```
 
-#### Merge Safety Checks & Guardrails (`handle_pr_approval_action`)
-Before calling the GitHub Merge API, TeamPulse executes 5 strict safety checks. If any check fails, the merge is refused and recorded in `actions_taken` with `status="refused"`:
+#### 5 Checks Before the Merge and Post-Merge Step (`handle_pr_approval_action`)
+Before calling the GitHub Merge API, TeamPulse executes 5 checks before the merge (approver list, dry-run mode, PR state, conflicts, CI), then a post-merge step. If any check fails, the merge is refused and recorded in `actions_taken` with `status="refused"`:
 1. **Approver List Authorization**: The clicking user must be in `SLACK_APPROVER_IDS`.
    - **Empty List Refusal**: If `SLACK_APPROVER_IDS` is empty or unconfigured, TeamPulse **REFUSES** all merge actions with a clear Slack warning explaining how to configure authorized approver IDs in `.env`.
    - **Unauthorized User Refusal**: If the clicking user ID is not in `SLACK_APPROVER_IDS`, the merge is refused with an unauthorized notice.
@@ -273,7 +273,7 @@ Before calling the GitHub Merge API, TeamPulse executes 5 strict safety checks. 
    - **No CI Configured**: If both status count and check runs count are 0, merge is permitted, and ` (no CI found)` is appended to the resolution message.
    - **Combined Commit Status**: If status count > 0 and combined state is not `success`, refuses with `:warning: Merge refused: CI status is {state} for commit {sha}.`
    - **Check Runs**: If check runs exist, every run must have `status == "completed"` and `conclusion in ("success", "neutral", "skipped")`. If any check run is still in progress or failed, merge is refused.
-6. **Alert Loop Prevention**: Upon a successful live merge, TeamPulse marks the linked Jira ticket as Done and records `ActionTaken(action_type="jira_auto_done", target_id=jira_key, status="executed")`. This prevents Flow 3's background poller from re-alerting for the same ticket.
+6. **After the merge (Alert Loop Prevention)**: Upon a successful live merge, TeamPulse marks the linked Jira ticket as Done and records `ActionTaken(action_type="jira_auto_done", target_id=jira_key, status="executed")`. This prevents Flow 3's background poller from re-alerting for the same ticket.
 
 ---
 

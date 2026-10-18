@@ -35,7 +35,7 @@ Example: A developer opens a pull request on Monday. Nobody is assigned to revie
 | Dry-run mode | When `DRY_RUN_ACTIONS=true`, logs proposed write operations without creating real Jira issues or posting modifications | [app/config.py](app/config.py), [app/agents/actions.py](app/agents/actions.py) |
 | AI Project Planner | Deconstructs natural language project ideas into Epics, Tasks, and Subtasks; scales hours proportionally to capacity (capacity allocations, not empirical estimates); automatically provisions Jira hierarchy | [app/agents/planner.py](app/agents/planner.py), [app/api/routes/planner.py](app/api/routes/planner.py) |
 | PR Completion Slack Alert | Webhook or alert when PR opens -> extracts Jira key, links Jira ticket in Slack, provides [Approve & Merge] / [Decline] buttons | [app/agents/pr_alert.py](app/agents/pr_alert.py), [app/api/routes/github.py](app/api/routes/github.py) |
-| One-Click Slack Auto-Merge | Clicking [Approve & Merge] checks 5 merge safety guardrails, merges the PR to main via GitHub REST API, transitions the linked Jira ticket to Done, and records `jira_auto_done` | [app/agents/pr_alert.py](app/agents/pr_alert.py), [app/integrations/jira_client.py](app/integrations/jira_client.py) |
+| One-Click Slack Auto-Merge | Clicking [Approve & Merge] runs 5 checks before the merge (approver list, dry-run mode, PR state, conflicts, CI), then a post-merge step: merges the PR to main via GitHub REST API, transitions the linked Jira ticket to Done, and records `jira_auto_done` | [app/agents/pr_alert.py](app/agents/pr_alert.py), [app/integrations/jira_client.py](app/integrations/jira_client.py) |
 | Jira Done Task Auto-Poller | 15s poller detects tasks moved to Done in Jira, resolves GitHub PR search URL, posts review card to Slack with direct diff link and [Approve & Verify] / [Decline & Reopen] buttons; skips tickets TeamPulse moved itself and remembers alerted tickets across restarts | [app/api/routes/jira.py](app/api/routes/jira.py), [app/api/routes/slack.py](app/api/routes/slack.py) |
 
 ## 4. How the Flow Works
@@ -76,8 +76,8 @@ teampulse/
 │   ├── agents/
 │   │   ├── actions.py       # Executes approved Slack actions and duplicate prevention
 │   │   ├── briefing.py      # Builds Slack Block Kit layout, warnings, and formatting
-│   │   ├── planner.py       # Phase 8: AI Project Planner & Jira issue hierarchy creator
-│   │   ├── pr_alert.py      # Phase 9: PR completion alert, Jira linking & merge/decline
+│   │   ├── planner.py       # AI Project Planner & Jira issue hierarchy creator
+│   │   ├── pr_alert.py      # PR completion alert, Jira linking & merge/decline
 │   │   └── query.py         # Handles natural language queries, ranking, and counts
 │   ├── api/
 │   │  │       └── routes/
@@ -157,7 +157,7 @@ teampulse/
 | Duplicate ticket check | Before creating a Jira ticket for a stale PR, the agent searches Jira for existing tickets containing the canonical ID, preventing duplicate spam. |
 | Flag persistence before Slack post | Flags are flushed to the database in `pending` status first so their auto-generated database IDs can be bound into Slack interactive button action values (`value=str(flag.id)`). Then the Block Kit briefing is posted, and the message timestamp is committed. |
 | Failed source shows WARNING, not All clear | A failed GitHub or Jira connection must never be masked as "zero issues". If collection fails, the briefing displays a prominent warning banner and marks counts as `unknown`. |
-| Merge safety guardrails | PR merges require authorized approver IDs in `SLACK_APPROVER_IDS`, an open and non-conflicting PR state, and passing CI checks. If no approvers are configured, merge actions are strictly refused. |
+| Merge safety guardrails | PR merges require 5 checks before the merge (approver list, dry-run mode, PR state, conflicts, CI), then a post-merge step. If no approvers are configured, merge actions are strictly refused. |
 | Poller deduplication & restart persistence | Tickets moved to Done by TeamPulse auto-merge or marked verified are recorded in `actions_taken` (`jira_auto_done`, `jira_task_verified`) so the 15-second background poller never re-alerts on actions TeamPulse performed itself. Alerted tickets are permanently stored as `jira_task_alerted` to survive server restarts. |
 | Planner capacity scaling | Hours assigned to Epics, Tasks, and Subtasks are capacity allocations scaled proportionally to match total developer capacity ($Devs \times Weeks \times 40h$), rather than empirical work estimates. |
 
@@ -260,12 +260,7 @@ Open `.env` in your text editor and fill in your settings.
 | `ADMIN_API_KEY` | Secret token required in `X-API-Key` header for protected API routes |
 | `QUERY_RATE_LIMIT_PER_MINUTE` | Max queries per minute permitted per API key on the `/query` endpoint |
 | `QUERY_CACHE_TTL_SECONDS` | Cache duration in seconds for collected PRs and tickets |
-| `QUERY_LLM_REPHRASE` | Set to true to let LLM rephrase query answers; false returns code-built answers |`) for morning briefing run |
-| `EVENING_BRIEFING_TIME` | 24-hour time string (`HH:MM`) for evening briefing run |
-| `ADMIN_API_KEY` | Secret token required in `X-API-Key` header for protected API routes |
-| `QUERY_RATE_LIMIT_PER_MINUTE` | Max queries per minute permitted per API key on the `/query` endpoint |
-| `QUERY_CACHE_TTL_SECONDS` | Cache duration in seconds for collected PRs and tickets |
-| `QUERY_LLM_REPHRASE` | Set to true to have LLM rephrase answers; false returns code-built answers |
+| `QUERY_LLM_REPHRASE` | Set to true to let LLM rephrase query answers; false returns code-built answers |
 
 ### Step 5: Create the Database
 Log into MySQL and create the database schema:
@@ -361,7 +356,7 @@ In any Slack channel where the bot is invited, type:
 - `/teampulse plan <description>` : Generates an AI project plan with Epics, Tasks, Subtasks, hours, and Jira tickets.
 - `/teampulse status` : Displays the status and latency of the most recent agent run.
 
-## 10. Phase 8: AI Project Planner
+## 10. AI Project Planner
 
 You provide a high-level project description, developer headcount, and duration. TeamPulse calculates required work hours, balances capacity ($developers \times weeks \times 40\text{ hours}$), breaks the project down into Epics, Tasks, and Subtasks, and automatically provisions the hierarchy in Jira with parent links. A live interactive web dashboard is also served at `http://localhost:8000/`.
 
@@ -398,7 +393,7 @@ curl -X POST http://localhost:8000/project/plan \
 - To provision a previously previewed plan into Jira, use `POST /project/provision`.
 - To update ticket hours or summaries dynamically, use `POST /project/ticket/update`.
 
-## 11. Phase 9 & 10: PR Completion Alert, One-Click Auto-Merge & Jira Done Poller
+## 11. PR Completion Alert, One-Click Auto-Merge & Jira Done Poller
 
 ### PR Completion Slack Alert
 When a developer finishes work and opens a pull request on GitHub:
@@ -409,14 +404,14 @@ When a developer finishes work and opens a pull request on GitHub:
    - Jira ticket link and current status
    - Interactive `[ Approve & Merge ]` and `[ Decline ]` buttons
 
-### One-Click Auto-Merge & 5 Merge Safety Guardrails
-Clicking `[ Approve & Merge ]` triggers `handle_pr_approval_action()` which enforces 5 strict safety checks before calling the GitHub merge API:
+### One-Click Auto-Merge & 5 Checks Before the Merge
+Clicking `[ Approve & Merge ]` triggers `handle_pr_approval_action()` which enforces 5 checks before the merge (approver list, dry-run mode, PR state, conflicts, CI), then a post-merge step:
 1. **Approver Authorization**: Verifies clicking user is in `SLACK_APPROVER_IDS`. If `SLACK_APPROVER_IDS` is empty, merge actions are strictly refused for safety.
 2. **Dry Run Safety Switch**: When `DRY_RUN_ACTIONS=true` (or `dry_run=True`), operations are simulated and logged as `dry_run` without modifying GitHub or Jira.
 3. **PR State & Merged Check**: PR must be currently `open` and not already `merged`.
 4. **Mergeability (Conflict) Check**: Verifies `mergeable is not False` and no `dirty` or `conflict` mergeable states exist.
 5. **CI Status & Check Runs**: Queries commit status and check runs. If 0 CI checks are configured on the repo, merge is allowed with ` (no CI found)` noted in Slack. If commit status is not `success` or any check run failed/in-progress, merge is refused.
-6. **Post-Merge Transition & Deduplication**: Merges PR to `main` via GitHub REST API, marks Jira ticket as Done, and records `ActionTaken(action_type="jira_auto_done", status="executed")` to prevent the poller from re-alerting.
+6. **After the merge**: Merges PR to `main` via GitHub REST API, marks Jira ticket as Done, and records `ActionTaken(action_type="jira_auto_done", status="executed")` to prevent the poller from re-alerting.
 
 ### Jira Done Task Auto-Poller (Agent 5)
 A 15-second background poller (`poll_jira_completed_tasks_loop`) and Jira webhook (`POST /jira/webhook`) detect when tasks transition to Done in Jira:
@@ -436,7 +431,7 @@ In Jira Cloud $\to$ **System** $\to$ **WebHooks**:
 - **URL**: `https://<ngrok-domain>/jira/webhook?secret=your-jira-webhook-secret`
 - **Events**: Issue updated (`jira:issue_updated`)
 
-## 12. How to Test & Verify (Phase 11)
+## 12. How to Test & Verify
 
 ### Complete Automated Unit Tests
 Run the comprehensive test suite locally. All 222 unit tests execute safely in-memory with simulated data without touching external services:
