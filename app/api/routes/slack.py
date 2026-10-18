@@ -156,17 +156,49 @@ async def process_pr_slack_interaction(
 ) -> None:
     """Process PR Approve & Merge or Decline button click."""
     settings = get_settings()
-    approvers = settings.slack_approver_ids
-    if approvers and user_id not in approvers:
-        logger.warning("Unauthorized user %s attempted PR action %s", user_id, action_id)
-        await send_ephemeral_message(
-            response_url=response_url,
-            channel_id=channel_id,
-            user_id=user_id,
-            text=f":warning: <@{user_id}>, you are not authorized to approve or decline pull requests.",
-            slack_client=slack_client,
-        )
-        return
+    raw_approvers = settings.slack_approver_ids
+    if isinstance(raw_approvers, str):
+        approvers = [uid.strip() for uid in raw_approvers.split(",") if uid.strip()]
+    else:
+        approvers = [str(uid).strip() for uid in (raw_approvers or []) if str(uid).strip()]
+
+    if action_id == "pr_approve_and_merge":
+        if not approvers:
+            refusal_text = (
+                ":warning: Merge refused: `SLACK_APPROVER_IDS` is empty. "
+                "Please configure `SLACK_APPROVER_IDS` in your `.env` (e.g. `SLACK_APPROVER_IDS=U12345,U67890`) to designate authorized approvers."
+            )
+            logger.warning("PR merge refused: SLACK_APPROVER_IDS is empty.")
+            if channel_id and message_ts:
+                updated_blocks = replace_pr_action_buttons_in_blocks(blocks, refusal_text)
+                client = slack_client or SlackClient()
+                try:
+                    await client.update_message(
+                        channel=channel_id,
+                        ts=message_ts,
+                        text=refusal_text,
+                        blocks=updated_blocks,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to update Slack message for PR action: %s", exc)
+            return
+
+        if user_id not in approvers:
+            refusal_text = f":warning: Merge refused: <@{user_id}> is not authorized to merge pull requests (not listed in `SLACK_APPROVER_IDS`)."
+            logger.warning("Unauthorized user %s attempted PR merge", user_id)
+            if channel_id and message_ts:
+                updated_blocks = replace_pr_action_buttons_in_blocks(blocks, refusal_text)
+                client = slack_client or SlackClient()
+                try:
+                    await client.update_message(
+                        channel=channel_id,
+                        ts=message_ts,
+                        text=refusal_text,
+                        blocks=updated_blocks,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to update Slack message for PR action: %s", exc)
+            return
 
     try:
         outcome = await handle_pr_approval_action(
@@ -175,7 +207,9 @@ async def process_pr_slack_interaction(
             user_id=user_id,
             session_factory=session_factory,
         )
-        if action_id == "pr_approve_and_merge":
+        if "Merge refused" in outcome or outcome.startswith(":warning:"):
+            resolution_text = outcome
+        elif action_id == "pr_approve_and_merge":
             resolution_text = f":white_check_mark: *Approved & Merged by <@{user_id}>* — {outcome}"
         else:
             resolution_text = f":x: *Declined by <@{user_id}>* — {outcome}"
@@ -206,9 +240,11 @@ async def process_jira_task_slack_interaction(
     blocks: List[Dict[str, Any]],
     jira_client: Optional[JiraClient] = None,
     slack_client: Optional[SlackClient] = None,
+    session_factory: Optional[Any] = None,
 ) -> None:
     """Process Jira task Approve & Verify or Decline & Reopen button click."""
     from datetime import datetime
+    settings = get_settings()
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
     client = jira_client or JiraClient()
     try:
@@ -216,23 +252,49 @@ async def process_jira_task_slack_interaction(
             comment = f"TeamPulse: Task approved & verified by Slack user <@{user_id}> at {now_str}."
             await client.add_comment(issue_key, comment)
             resolution_text = f":white_check_mark: *Task Approved & Verified by <@{user_id}>* at `{now_str}` — Marked verified in Jira ({issue_key})"
+
+            # Record verify action in actions_taken
+            try:
+                factory = session_factory or get_session_factory()
+                with factory() as session:
+                    verify_record = ActionTaken(
+                        workspace_id="default",
+                        action_type="jira_task_verified",
+                        target_id=issue_key,
+                        payload=json.dumps({"user_id": user_id, "issue_key": issue_key, "action_id": action_id}),
+                        status="executed",
+                        approved_by=user_id,
+                        result=f"Verified Jira task {issue_key}",
+                        executed_at=utc_now(),
+                        created_at=utc_now(),
+                    )
+                    session.add(verify_record)
+                    session.commit()
+            except Exception as audit_err:
+                logger.warning("Could not record ActionTaken for jira_task_verified (%s): %s", issue_key, audit_err)
+
         else:
-            # Reopen issue: find transition back to In Progress (21) or To Do (11)
-            transitions = await client.get_transitions(issue_key)
-            reopen_tid = None
-            for t in transitions:
-                name_l = t.get("name", "").lower()
-                to_name = t.get("to", {}).get("name", "").lower()
-                if "in progress" in name_l or "in progress" in to_name:
-                    reopen_tid = str(t["id"])
-                    break
-                elif "to do" in name_l or "to do" in to_name:
-                    reopen_tid = str(t["id"])
+            # Reopen issue: use configured transition ID or find transition back to In Progress / To Do
+            reopen_tid = getattr(settings, "jira_reopen_transition_id", "21") or "21"
+            try:
+                transitions = await client.get_transitions(issue_key)
+                for t in transitions:
+                    if str(t.get("id")) == reopen_tid:
+                        break
+                    name_l = t.get("name", "").lower()
+                    to_name = t.get("to", {}).get("name", "").lower()
+                    if "in progress" in name_l or "in progress" in to_name:
+                        reopen_tid = str(t["id"])
+                        break
+                    elif "to do" in name_l or "to do" in to_name:
+                        reopen_tid = str(t["id"])
+            except Exception as tr_err:
+                logger.warning("Could not list transitions for %s, using configured reopen id %s: %s", issue_key, reopen_tid, tr_err)
 
             if reopen_tid:
                 await client.transition_issue(issue_key, reopen_tid)
             from app.api.routes.jira import mark_issue_reopened
-            mark_issue_reopened(issue_key)
+            mark_issue_reopened(issue_key, session_factory=session_factory)
             comment = f"TeamPulse: Task declined by Slack user <@{user_id}> at {now_str}. Reopened for revisions."
             await client.add_comment(issue_key, comment)
             resolution_text = f":x: *Task Declined by <@{user_id}>* at `{now_str}` — Reopened back to In Progress in Jira ({issue_key})"
@@ -297,6 +359,7 @@ async def process_slack_interaction(
             blocks=blocks,
             jira_client=jira_client,
             slack_client=slack_client,
+            session_factory=session_factory,
         )
         return
 

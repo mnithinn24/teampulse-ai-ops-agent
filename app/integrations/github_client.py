@@ -332,6 +332,16 @@ class GitHubClient:
         endpoint = f"/repos/{repo}/pulls/{pull_number}"
         return await self._request(endpoint, method="GET")
 
+    async def get_commit_status(self, repo: str, sha: str) -> Dict[str, Any]:
+        """Fetch combined status for a commit SHA via GET /repos/{owner}/{repo}/commits/{ref}/status."""
+        endpoint = f"/repos/{repo}/commits/{sha}/status"
+        return await self._request(endpoint, method="GET")
+
+    async def get_commit_check_runs(self, repo: str, sha: str) -> Dict[str, Any]:
+        """Fetch check runs for a commit SHA via GET /repos/{owner}/{repo}/commits/{ref}/check-runs."""
+        endpoint = f"/repos/{repo}/commits/{sha}/check-runs"
+        return await self._request(endpoint, method="GET")
+
     async def merge_pull_request(
         self,
         repo: str,

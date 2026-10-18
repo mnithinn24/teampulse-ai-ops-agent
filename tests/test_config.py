@@ -20,6 +20,9 @@ def test_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    monkeypatch.delenv("SLACK_APPROVER_IDS", raising=False)
+    monkeypatch.delenv("JIRA_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("JIRA_REOPEN_TRANSITION_ID", raising=False)
     settings = Settings(_env_file=None)
     assert settings.stale_pr_days == 7
     assert settings.stale_ticket_days == 14

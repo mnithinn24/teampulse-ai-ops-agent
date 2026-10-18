@@ -98,6 +98,10 @@ def isolate_test_environment(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash")
     monkeypatch.setenv("ADMIN_API_KEY", "dummy-admin-key")
 
+    monkeypatch.setenv("SLACK_APPROVER_IDS", "U_LEAD,U_TECH_LEAD,U_APPROVER,U12345,U55555")
+    monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "dummy-jira-webhook-secret")
+    monkeypatch.setenv("JIRA_REOPEN_TRANSITION_ID", "21")
+
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.setenv("DRY_RUN_ACTIONS", "true")
     monkeypatch.setenv("ENABLE_SCHEDULER", "false")

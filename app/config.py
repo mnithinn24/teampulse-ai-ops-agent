@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     jira_email: str = Field(default="", description="Jira user email address")
     jira_api_token: str = Field(default="", description="Jira REST API token")
     jira_project_key: str = Field(default="", description="Target Jira project key, e.g. PROJ")
+    jira_webhook_secret: str = Field(
+        default="",
+        description="Secret for validating incoming Jira webhook payloads",
+    )
+    jira_reopen_transition_id: str = Field(
+        default="21",
+        description="Jira transition ID to reopen tickets back to In Progress",
+    )
 
     # Database Configuration
     database_url: str = Field(

@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import get_settings
 from app.db.database import get_session_factory
@@ -245,6 +245,37 @@ async def notify_new_pull_request(
             await client.close()
 
 
+def _record_action(
+    session_factory: Optional[Any],
+    action_type: str,
+    target_id: str,
+    user_id: str,
+    jira_key: Optional[str],
+    action_id: str,
+    status: str,
+    result: str,
+) -> None:
+    """Record an audit log entry in the actions_taken table."""
+    try:
+        factory = session_factory or get_session_factory()
+        with factory() as session:
+            action_record = ActionTaken(
+                workspace_id="default",
+                action_type=action_type,
+                target_id=target_id,
+                payload=json.dumps({"user_id": user_id, "jira_key": jira_key, "action_id": action_id}),
+                status=status,
+                approved_by=user_id,
+                result=result,
+                executed_at=utc_now(),
+                created_at=utc_now(),
+            )
+            session.add(action_record)
+            session.commit()
+    except Exception as audit_err:
+        logger.warning("Could not record ActionTaken for %s (%s): %s", action_type, target_id, audit_err)
+
+
 async def handle_pr_approval_action(
     action_id: str,
     value: str,
@@ -304,12 +335,123 @@ async def handle_pr_approval_action(
 
     try:
         if is_approve:
+            # Enforce approver permissions
+            raw_approvers = settings.slack_approver_ids
+            if isinstance(raw_approvers, str):
+                approver_ids = [uid.strip() for uid in raw_approvers.split(",") if uid.strip()]
+            else:
+                approver_ids = [str(uid).strip() for uid in (raw_approvers or []) if str(uid).strip()]
+
+            if not approver_ids:
+                msg = (
+                    ":warning: Merge refused: `SLACK_APPROVER_IDS` is empty. "
+                    "Please configure `SLACK_APPROVER_IDS` in your `.env` (e.g. `SLACK_APPROVER_IDS=U12345,U67890`) to designate authorized approvers."
+                )
+                logger.warning("Merge refused for %s#%d: SLACK_APPROVER_IDS is empty", repo, pull_number)
+                _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                return msg
+
+            if user_id not in approver_ids:
+                msg = f":warning: Merge refused: <@{user_id}> is not authorized to merge pull requests (not listed in `SLACK_APPROVER_IDS`)."
+                logger.warning("Merge refused for %s#%d: unauthorized user %s", repo, pull_number, user_id)
+                _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                return msg
+
             if is_dry_run:
                 msg = f"[DRY RUN] Would merge {repo}#{pull_number} to main"
                 if jira_key:
                     msg += f" and mark Jira {jira_key} as Done"
+                status_str = "dry_run"
             else:
                 assert gh_client is not None
+
+                # Safety check 1: PR state and mergeable status
+                try:
+                    pr_data = await gh_client.get_pull_request(repo=repo, pull_number=pull_number)
+                except Exception as exc:
+                    logger.warning("Could not fetch PR details for safety checks: %s", exc)
+                    pr_data = None
+
+                if not isinstance(pr_data, dict):
+                    pr_data = {"state": "open", "merged": False, "mergeable": True, "head": {"sha": ""}}
+
+                if bool(pr_data.get("merged", False)):
+                    msg = f":warning: Merge refused: Pull request {repo}#{pull_number} is already merged."
+                    logger.warning(msg)
+                    _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                    return msg
+
+                pr_state = str(pr_data.get("state", "open")).lower()
+                if pr_state != "open":
+                    msg = f":warning: Merge refused: Pull request {repo}#{pull_number} is not open (current state: {pr_state})."
+                    logger.warning(msg)
+                    _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                    return msg
+
+                mergeable = pr_data.get("mergeable")
+                mergeable_state = str(pr_data.get("mergeable_state", "")).lower()
+                if mergeable is False or mergeable_state in ("dirty", "conflict"):
+                    msg = f":warning: Merge refused: Pull request {repo}#{pull_number} has merge conflicts and is not mergeable."
+                    logger.warning(msg)
+                    _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                    return msg
+
+                # Safety check 2: CI status check
+                head_sha = ""
+                if isinstance(pr_data.get("head"), dict):
+                    head_sha = str(pr_data["head"].get("sha", "")).strip()
+
+                status_data: Dict[str, Any] = {}
+                check_runs_data: Dict[str, Any] = {}
+                if head_sha:
+                    try:
+                        s_res = await gh_client.get_commit_status(repo=repo, sha=head_sha)
+                        if isinstance(s_res, dict):
+                            status_data = s_res
+                    except Exception as s_err:
+                        logger.debug("Could not get commit status for %s@%s: %s", repo, head_sha, s_err)
+
+                    try:
+                        c_res = await gh_client.get_commit_check_runs(repo=repo, sha=head_sha)
+                        if isinstance(c_res, dict):
+                            check_runs_data = c_res
+                    except Exception as c_err:
+                        logger.debug("Could not get check runs for %s@%s: %s", repo, head_sha, c_err)
+
+                status_count = status_data.get("total_count", 0)
+                check_runs = check_runs_data.get("check_runs", [])
+                check_count = check_runs_data.get("total_count", len(check_runs))
+
+                ci_note = ""
+                if status_count == 0 and check_count == 0:
+                    ci_note = " (no CI found)"
+                else:
+                    if status_count > 0:
+                        comb_state = str(status_data.get("state", "")).lower()
+                        if comb_state not in ("success", ""):
+                            msg = f":warning: Merge refused: CI status is {comb_state} for commit {head_sha[:7] if head_sha else 'head'}."
+                            logger.warning(msg)
+                            _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                            return msg
+
+                    if check_count > 0:
+                        for cr in check_runs:
+                            cr_name = cr.get("name", "check")
+                            cr_status = str(cr.get("status", "")).lower()
+                            cr_conclusion = str(cr.get("conclusion") or "").lower()
+
+                            if cr_status != "completed":
+                                msg = f":warning: Merge refused: CI check run '{cr_name}' is still in progress ({cr_status})."
+                                logger.warning(msg)
+                                _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                                return msg
+                            if cr_conclusion not in ("success", "neutral", "skipped"):
+                                msg = f":warning: Merge refused: CI check run '{cr_name}' failed ({cr_conclusion})."
+                                logger.warning(msg)
+                                _record_action(session_factory, "pr_approve_and_merge", f"{repo}#{pull_number}", user_id, jira_key, action_id, "refused", msg)
+                                return msg
+
+                # All safety checks passed -> Proceed to merge
                 merge_res = await gh_client.merge_pull_request(
                     repo=repo,
                     pull_number=pull_number,
@@ -319,7 +461,7 @@ async def handle_pr_approval_action(
                 sha_str = ""
                 if isinstance(merge_res, dict) and merge_res.get("sha"):
                     sha_str = f" (SHA: {merge_res['sha'][:7]})"
-                msg = f"Merged {repo}#{pull_number} to main{sha_str}"
+                msg = f"Merged {repo}#{pull_number} to main{sha_str}{ci_note}"
 
                 if jira_key and j_client is not None:
                     try:
@@ -336,10 +478,23 @@ async def handle_pr_approval_action(
                         else:
                             msg += f" & updated Jira {jira_key} ({now_str})"
                         await j_client.add_comment(issue_key=jira_key, comment_text=comment_note)
+
+                        # Record TeamPulse's Jira auto-done transition in actions_taken
+                        _record_action(
+                            session_factory,
+                            action_type="jira_auto_done",
+                            target_id=jira_key,
+                            user_id=user_id,
+                            jira_key=jira_key,
+                            action_id="jira_auto_done",
+                            status="executed",
+                            result=f"Moved {jira_key} to Done after merging {repo}#{pull_number}",
+                        )
                     except Exception as j_err:
                         logger.warning("Failed to update/transition Jira issue %s: %s", jira_key, j_err)
 
-            status_str = "dry_run" if is_dry_run else "executed"
+                status_str = "executed"
+
             action_type = "pr_approve_and_merge"
 
         else:
@@ -368,24 +523,16 @@ async def handle_pr_approval_action(
             action_type = "pr_decline"
 
         # Record audit log in actions_taken
-        try:
-            factory = session_factory or get_session_factory()
-            with factory() as session:
-                action_record = ActionTaken(
-                    workspace_id="default",
-                    action_type=action_type,
-                    target_id=f"{repo}#{pull_number}",
-                    payload=json.dumps({"user_id": user_id, "jira_key": jira_key, "action_id": action_id}),
-                    status=status_str,
-                    approved_by=user_id,
-                    result=msg,
-                    executed_at=utc_now(),
-                    created_at=utc_now(),
-                )
-                session.add(action_record)
-                session.commit()
-        except Exception as audit_err:
-            logger.warning("Could not record ActionTaken for PR action: %s", audit_err)
+        _record_action(
+            session_factory,
+            action_type=action_type,
+            target_id=f"{repo}#{pull_number}",
+            user_id=user_id,
+            jira_key=jira_key,
+            action_id=action_id,
+            status=status_str,
+            result=msg,
+        )
 
         return msg
 
